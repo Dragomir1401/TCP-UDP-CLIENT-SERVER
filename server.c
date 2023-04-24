@@ -465,6 +465,83 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
     return 1;
 }
 
+tcp_client *find_client(linked_list_t *tcp_clients, int fd)
+{
+    tcp_client *client;
+    for (ll_node_t *curr_client = tcp_clients->head; curr_client; curr_client = curr_client->next)
+    {
+        if (((tcp_client *)curr_client->data)->socket == fd)
+        {
+            client = ((tcp_client *)(curr_client->data));
+        }
+    }
+
+    return client;
+}
+
+void handle_disconnect(int epollfd, char *client_id, tcp_client *client, struct epoll_event *events, int index)
+{
+    printf("Client %s disconnected.\n", client_id);
+
+    // Just modify the status
+    client->status = 0;
+
+    int closed_socket = client->socket;
+
+    // // Remove socket from epoll
+    int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, closed_socket, &events[index]);
+    DIE(rc < 0, "Unable to remove socket from epoll.");
+
+    // Close the TCP client socket
+    close(closed_socket);
+}
+
+void extract_subscribe(char *buf, char *command, char *topic_targeted, char *sf)
+{
+    char *p = strtok(buf, " ");
+    memmove(command, p, strlen(p));
+
+    p = strtok(NULL, " ");
+    memmove(topic_targeted, p, strlen(p));
+
+    p = strtok(NULL, "\n");
+    memmove(sf, p, strlen(p) + 1);
+}
+
+void subscribe_user_to_topic(linked_list_t *topics, tcp_client *client, char *topic_targeted, char *sf)
+{
+    for (ll_node_t *curr = topics->head; curr; curr = curr->next)
+    {
+        // If topic exists in list
+        if (!strncmp(topic_targeted, ((topic *)(curr->data))->topic, strlen(topic_targeted)))
+        {
+            // Add client to topic subscribed clients if not present already eventually modify sf
+            int exists = 0;
+            for (ll_node_t *sub = ((topic *)(curr->data))->subscribers->head; sub; sub = sub->next)
+            {
+                if (!strncmp(((tcp_client *)sub->data)->id, client->id, strlen(client->id)))
+                {
+                    // It already exists in list, update sf
+                    fprintf(stderr, "Client %s is already subscribed to topic %s. Updating sf...\n", client->id, topic_targeted);
+                    exists = 1;
+                    ((tcp_client *)sub->data)->sf = atoi(sf);
+                }
+            }
+            if (!exists)
+            {
+                fprintf(stderr, "Adding client %s to list of clients for topic %s.\n", client->id, topic_targeted);
+                ll_add_nth_node(((topic *)(curr->data))->subscribers, ll_get_size(((topic *)(curr->data))->subscribers), client);
+            }
+
+            break;
+        }
+    }
+}
+
+void create_fictive_topic()
+{
+}
+
 int main(int argc, char *argv[])
 {
     // Create list of TCP clients connected
@@ -546,49 +623,23 @@ int main(int argc, char *argv[])
                 DIE(rc < 0, "Unable to receive TCP message.");
 
                 // Find client
-                tcp_client *client;
-                for (ll_node_t *curr_client = tcp_clients->head; curr_client; curr_client = curr_client->next)
-                {
-                    if (((tcp_client *)curr_client->data)->socket == events[i].data.fd)
-                    {
-                        client = ((tcp_client *)(curr_client->data));
-                    }
-                }
+                tcp_client *client = find_client(tcp_clients, events[i].data.fd);
 
                 // Case where TCP client disconnected
                 if (!strncmp(buf, "exit", CLOSE_MESSAGE_LEN - 1))
                 {
-                    printf("Client %s disconnected.\n", client->id);
-
-                    // Just modify the status
-                    client->status = 0;
-
-                    int closed_socket = client->socket;
-
-                    // // Remove socket from epoll
-                    rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, closed_socket, &events[i]);
-                    DIE(rc < 0, "Unable to remove socket from epoll.");
-
-                    // Close the TCP client socket
-                    close(closed_socket);
-
+                    handle_disconnect(epollfd, client->id, client, events, i);
                     continue;
                 }
                 // Subscribe command
                 else if (!strncmp(buf, "subscribe", SUBSCRIBE_COMMAND_LEN))
                 {
                     // Extract topic and sf
-                    char *p = strtok(buf, " ");
                     char *command = malloc(MAX_COMMAND_SIZE);
-                    memmove(command, p, strlen(p));
-
-                    p = strtok(NULL, " ");
                     char *topic_targeted = malloc(MAX_TOPIC_SIZE);
-                    memmove(topic_targeted, p, strlen(p));
-
-                    p = strtok(NULL, "\n");
                     char *sf = malloc(MAX_SF_SIZE);
-                    memmove(sf, p, strlen(p) + 1);
+
+                    extract_subscribe(buf, command, topic_targeted, sf);
 
                     // Update sf on client
                     client->sf = atoi(sf);
@@ -596,35 +647,7 @@ int main(int argc, char *argv[])
                     fprintf(stderr, "Client with ID: %s %s to topic: %s with sf = %s.\n", client->id, command, topic_targeted, sf);
 
                     // Subscribe user tot topic
-                    for (ll_node_t *curr = topics->head; curr; curr = curr->next)
-                    {
-                        // If topic exists in list
-                        if (!strncmp(topic_targeted, ((topic *)(curr->data))->topic, strlen(topic_targeted)))
-                        {
-                            // Add client to topic subscribed clients if not present already eventually modify sf
-                            int exists = 0;
-                            for (ll_node_t *sub = ((topic *)(curr->data))->subscribers->head; sub; sub = sub->next)
-                            {
-                                if (!strncmp(((tcp_client *)sub->data)->id, client->id, strlen(client->id)))
-                                {
-                                    // It already exists in list, update sf
-                                    fprintf(stderr, "Client %s is already subscribed to topic %s. Updating sf...\n", client->id, topic_targeted);
-                                    exists = 1;
-                                    ((tcp_client *)sub->data)->sf = atoi(sf);
-                                }
-                            }
-                            if (!exists)
-                            {
-                                fprintf(stderr, "Adding client %s to list of clients for topic %s.\n", client->id, topic_targeted);
-                                ll_add_nth_node(((topic *)(curr->data))->subscribers, ll_get_size(((topic *)(curr->data))->subscribers), client);
-                            }
-
-                            break;
-                        }
-                    }
-
-                    // Else it means that the topic is not yet in list we add it as wanted topic to user topics list
-                    fprintf(stderr, "Topic is not yet in server.\n");
+                    subscribe_user_to_topic(topics, client, topic_targeted, sf);
 
                     // Create fictive topic with pre subscribed users and add it to topics then delete it when we find the real one
                     topic *fictive = malloc(sizeof(topic));
