@@ -640,14 +640,9 @@ void handle_unsub(linked_list_t *topics, tcp_client *client, char *buf)
     free(buf);
 }
 
-int main(int argc, char *argv[])
+void prepare_conn(int *udp_socket, int *tcp_socket,
+                  struct sockaddr_in server_addr, int argc, char *argv[], int *epollfd, int *eventfd)
 {
-    // Create list of TCP clients connected
-    linked_list_t *tcp_clients = ll_create(sizeof(tcp_client));
-
-    // Create topic list
-    linked_list_t *topics = ll_create(sizeof(topic));
-
     // Turning off buffering at stdout
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
@@ -658,37 +653,52 @@ int main(int argc, char *argv[])
     DIE(!atoi(argv[1]), "Invalid port number.");
 
     // Read TCP socket
-    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
-    DIE(tcp_socket < 0, "Unable to read TCP socket.");
+    *tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    DIE(*tcp_socket < 0, "Unable to read TCP socket.");
 
     // Turn off Nagle algorithm
-    int rc = setsockopt(tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
+    int rc = setsockopt(*tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
     DIE(rc < 0, "Unable to disable Nagle algorithm.");
+
+    // Bind the TCP socket to address
+    rc = bind(*tcp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    DIE(rc < 0, "Unable to bind TCP socket.");
+
+    // Listen to connections
+    rc = listen(*tcp_socket, MAX_CONNS);
+    DIE(rc < 0, "Unable to listen on tcp socket.");
+
+    // Read UDP socket
+    *udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    DIE(*udp_socket < 0, "Unable to read UDP socket.");
+
+    // Bind the UDP socket to address
+    rc = bind(*udp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    DIE(rc < 0, "Unable to bind UDP socket.");
+
+    // Create epoll
+    *epollfd = epoll_create1(0);
+    DIE(*epollfd < 0, "Unable to create epoll.");
+
+    add_epoll_events(*epollfd, *tcp_socket, *udp_socket);
+}
+
+int main(int argc, char *argv[])
+{
+    // Declare sockets
+    int tcp_socket, udp_socket, epollfd, eventfd;
+
+    // Create list of TCP clients connected
+    linked_list_t *tcp_clients = ll_create(sizeof(tcp_client));
+
+    // Create topic list
+    linked_list_t *topics = ll_create(sizeof(topic));
 
     // Set up server_addr
     struct sockaddr_in server_addr = set_up_server_addr(argv[1]);
 
-    // Bind the TCP socket to address
-    rc = bind(tcp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    DIE(rc < 0, "Unable to bind TCP socket.");
-
-    // Listen to connections
-    rc = listen(tcp_socket, MAX_CONNS);
-    DIE(rc < 0, "Unable to listen on tcp socket.");
-
-    // Read UDP socket
-    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    DIE(udp_socket < 0, "Unable to read UDP socket.");
-
-    // Bind the UDP socket to address
-    rc = bind(udp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    DIE(rc < 0, "Unable to bind UDP socket.");
-
-    // Create epoll
-    int epollfd = epoll_create1(0);
-    DIE(epollfd < 0, "Unable to create epoll.");
-
-    add_epoll_events(epollfd, tcp_socket, udp_socket);
+    // Prepare connections
+    prepare_conn(&udp_socket, &tcp_socket, server_addr, argc, argv, &epollfd, &eventfd);
 
     while (1)
     {
