@@ -17,7 +17,7 @@
 #include <sys/eventfd.h>
 #include <sys/sendfile.h>
 
-int main(int argc, char *argv[])
+void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *eventfd)
 {
     // Check correct usage
     DIE(argc < 4, "You need this usage syntax: %s client_id server_address server_port.", argv[0]);
@@ -26,8 +26,8 @@ int main(int argc, char *argv[])
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
     // Read socket
-    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
-    DIE(tcp_socket < 0, "Unable to read TCP socket.");
+    *tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    DIE(*tcp_socket < 0, "Unable to read TCP socket.");
 
     // Set up server info
     struct sockaddr_in serv_addr;
@@ -37,36 +37,42 @@ int main(int argc, char *argv[])
     DIE(rc == 0, "Unable to convert server address.");
 
     // Connect with server
-    rc = connect(tcp_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+    rc = connect(*tcp_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
     DIE(rc < 0, "Unable to connect to server.");
 
     // Turn off Nagle algorithm
-    rc = setsockopt(tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
+    rc = setsockopt(*tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
     DIE(rc < 0, "Unable to disable Nagle algorithm.");
 
     // Send client ID to the server
     char *buf = malloc(MAX_ID_SIZE);
     strncpy(buf, argv[1], strlen(argv[1]) + 1);
-    rc = send(tcp_socket, buf, strlen(buf), 0);
+    rc = send(*tcp_socket, buf, strlen(buf), 0);
     DIE(rc < 0, "Unable to send TCP client id to server.");
 
     // Create epoll
-    int epollfd = epoll_create1(0);
-    DIE(epollfd < 0, "Unable to create epoll.");
+    *epollfd = epoll_create1(0);
+    DIE(*epollfd < 0, "Unable to create epoll.");
 
     // Add TCP socket to epoll
     struct epoll_event tcp_event;
-    tcp_event.data.fd = tcp_socket;
+    tcp_event.data.fd = *tcp_socket;
     tcp_event.events = EPOLLIN;
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, tcp_socket, &tcp_event);
+    epoll_ctl(*epollfd, EPOLL_CTL_ADD, *tcp_socket, &tcp_event);
     DIE(rc < 0, "Unable to add TCP socket to epoll instance.");
 
     // Add stdin to epoll to see if we get commands from input
     struct epoll_event stdin_event;
     stdin_event.data.fd = STDIN_FILENO;
     stdin_event.events = EPOLLIN;
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &stdin_event);
+    epoll_ctl(*epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &stdin_event);
     DIE(rc < 0, "Unable to add stdin socket to epoll instance.");
+}
+
+int main(int argc, char *argv[])
+{
+    int tcp_socket, epollfd, eventfd;
+    prepare_conn(argc, argv, &tcp_socket, &epollfd, &eventfd);
 
     int dim_size = 10;
     while (1)
@@ -82,7 +88,7 @@ int main(int argc, char *argv[])
                 // Stdin reply
                 char *buf = malloc(MAX_SIZE);
                 memset(buf, 0, MAX_SIZE);
-                rc = read(STDIN_FILENO, buf, MAX_SIZE);
+                int rc = read(STDIN_FILENO, buf, MAX_SIZE);
                 DIE(rc == -1, "Unable to read from stdin.");
 
                 // Check to see if we need to exit the server

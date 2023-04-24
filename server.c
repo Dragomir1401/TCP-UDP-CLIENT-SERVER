@@ -538,8 +538,106 @@ void subscribe_user_to_topic(linked_list_t *topics, tcp_client *client, char *to
     }
 }
 
-void create_fictive_topic()
+int handle_sub(linked_list_t *topics, tcp_client *client, char *buf)
 {
+    // Extract topic and sf
+    char *command = malloc(MAX_COMMAND_SIZE);
+    char *topic_targeted = malloc(MAX_TOPIC_SIZE);
+    char *sf = malloc(MAX_SF_SIZE);
+
+    extract_subscribe(buf, command, topic_targeted, sf);
+
+    // Update sf on client
+    client->sf = atoi(sf);
+
+    fprintf(stderr, "Client with ID: %s %s to topic: %s with sf = %s.\n", client->id, command, topic_targeted, sf);
+
+    // Subscribe user tot topic
+    subscribe_user_to_topic(topics, client, topic_targeted, sf);
+
+    // Create fictive topic with pre subscribed users and add it to topics then delete it when we find the real one
+    topic *fictive = malloc(sizeof(topic));
+    fictive->data_type = 5; // Mark as fictive using 5 in data type
+    memmove(fictive->topic, topic_targeted, strlen(topic_targeted));
+    fictive->subscribers = ll_create(sizeof(tcp_client));
+    ll_add_nth_node(fictive->subscribers, ll_get_size(fictive->subscribers), client);
+
+    // Add fictive topic to topic list
+    ll_add_nth_node(topics, ll_get_size(topics), fictive);
+
+    // Add it to client subscribed topics if it is not already there
+    fprintf(stderr, "Adding topic %s to list of topics for user %s.\n", topic_targeted, client->id);
+    int broke = 0;
+    for (ll_node_t *curr_topic = client->topics->head; curr_topic; curr_topic = curr_topic->next)
+    {
+        if (!strncmp(topic_targeted, (char *)(curr_topic->data), strlen(topic_targeted)))
+        {
+            // If it already is there dont add it no more
+            free(command);
+            free(topic_targeted);
+            free(sf);
+            broke = 1;
+        }
+    }
+
+    if (broke)
+    {
+        return -1;
+    }
+
+    // Else add it
+    ll_add_nth_node(client->topics, ll_get_size(client->topics), topic_targeted);
+
+    free(command);
+    free(topic_targeted);
+    free(sf);
+
+    return 1;
+}
+
+void handle_unsub(linked_list_t *topics, tcp_client *client, char *buf)
+{
+    // Extract topic
+    char *p = strtok(buf, " ");
+    char *command = malloc(MAX_COMMAND_SIZE);
+    memcpy(command, p, strlen(p));
+
+    p = strtok(NULL, "\n");
+    char *topic_targeted = malloc(MAX_TOPIC_SIZE);
+    memcpy(topic_targeted, p, strlen(p));
+
+    printf("Client with ID: %s %s to topic: %s.\n", client->id, command, topic_targeted);
+
+    int cnt = 0;
+    // Remove topic from client subscribed topics
+    for (ll_node_t *curr_client_topic = client->topics->head; curr_client_topic; curr_client_topic = curr_client_topic->next)
+    {
+        if (!strncmp(((topic *)curr_client_topic->data)->topic, topic_targeted, strlen(topic_targeted)))
+        {
+            ll_remove_nth_node(client->topics, cnt);
+        }
+        cnt++;
+    }
+
+    // If topic exists in topic list
+    for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
+    {
+        if (!strncmp(topic_targeted, ((topic *)(curr_topic->data))->topic, strlen(topic_targeted)))
+        {
+            cnt = 0;
+            // Remove subscriber from topic subscribed clients
+            for (ll_node_t *curr_subscriber = ((linked_list_t *)((topic *)(curr_topic->data))->subscribers)->head; curr_subscriber; curr_subscriber = curr_subscriber->next)
+            {
+                if (((tcp_client *)curr_subscriber)->id == client->id)
+                {
+                    ll_remove_nth_node(((topic *)(curr_topic->data))->subscribers, cnt);
+                }
+                cnt++;
+            }
+        }
+    }
+
+    free(buf);
 }
 
 int main(int argc, char *argv[])
@@ -634,103 +732,13 @@ int main(int argc, char *argv[])
                 // Subscribe command
                 else if (!strncmp(buf, "subscribe", SUBSCRIBE_COMMAND_LEN))
                 {
-                    // Extract topic and sf
-                    char *command = malloc(MAX_COMMAND_SIZE);
-                    char *topic_targeted = malloc(MAX_TOPIC_SIZE);
-                    char *sf = malloc(MAX_SF_SIZE);
-
-                    extract_subscribe(buf, command, topic_targeted, sf);
-
-                    // Update sf on client
-                    client->sf = atoi(sf);
-
-                    fprintf(stderr, "Client with ID: %s %s to topic: %s with sf = %s.\n", client->id, command, topic_targeted, sf);
-
-                    // Subscribe user tot topic
-                    subscribe_user_to_topic(topics, client, topic_targeted, sf);
-
-                    // Create fictive topic with pre subscribed users and add it to topics then delete it when we find the real one
-                    topic *fictive = malloc(sizeof(topic));
-                    fictive->data_type = 5; // Mark as fictive using 5 in data type
-                    memmove(fictive->topic, topic_targeted, strlen(topic_targeted));
-                    fictive->subscribers = ll_create(sizeof(tcp_client));
-                    ll_add_nth_node(fictive->subscribers, ll_get_size(fictive->subscribers), client);
-
-                    // Add fictive topic to topic list
-                    ll_add_nth_node(topics, ll_get_size(topics), fictive);
-
-                    // Add it to client subscribed topics if it is not already there
-                    fprintf(stderr, "Adding topic %s to list of topics for user %s.\n", topic_targeted, client->id);
-                    int broke = 0;
-                    for (ll_node_t *curr_topic = client->topics->head; curr_topic; curr_topic = curr_topic->next)
-                    {
-                        if (!strncmp(topic_targeted, (char *)(curr_topic->data), strlen(topic_targeted)))
-                        {
-                            // If it already is there dont add it no more
-                            free(command);
-                            free(topic_targeted);
-                            free(sf);
-                            broke = 1;
-                        }
-                    }
-
-                    if (broke)
-                    {
+                    if (handle_sub(topics, client, buf) == -1)
                         continue;
-                    }
-
-                    // Else add it
-                    ll_add_nth_node(client->topics, ll_get_size(client->topics), topic_targeted);
-
-                    free(command);
-                    free(topic_targeted);
-                    free(sf);
                 }
+                // Unsubscribe command
                 else if (!strncmp(buf, "unsubscribe", UNSUBSCRIBE_COMMAND_LEN))
                 {
-                    // Unsubscribe command
-
-                    // Extract topic
-                    char *p = strtok(buf, " ");
-                    char *command = malloc(MAX_COMMAND_SIZE);
-                    memcpy(command, p, strlen(p));
-
-                    p = strtok(NULL, "\n");
-                    char *topic_targeted = malloc(MAX_TOPIC_SIZE);
-                    memcpy(topic_targeted, p, strlen(p));
-
-                    printf("Client with ID: %s %s to topic: %s.\n", client->id, command, topic_targeted);
-
-                    int cnt = 0;
-                    // Remove topic from client subscribed topics
-                    for (ll_node_t *curr_client_topic = client->topics->head; curr_client_topic; curr_client_topic = curr_client_topic->next)
-                    {
-                        if (!strncmp(((topic *)curr_client_topic->data)->topic, topic_targeted, strlen(topic_targeted)))
-                        {
-                            ll_remove_nth_node(client->topics, cnt);
-                        }
-                        cnt++;
-                    }
-
-                    // If topic exists in topic list
-                    for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
-                    {
-                        if (!strncmp(topic_targeted, ((topic *)(curr_topic->data))->topic, strlen(topic_targeted)))
-                        {
-                            cnt = 0;
-                            // Remove subscriber from topic subscribed clients
-                            for (ll_node_t *curr_subscriber = ((linked_list_t *)((topic *)(curr_topic->data))->subscribers)->head; curr_subscriber; curr_subscriber = curr_subscriber->next)
-                            {
-                                if (((tcp_client *)curr_subscriber)->id == client->id)
-                                {
-                                    ll_remove_nth_node(((topic *)(curr_topic->data))->subscribers, cnt);
-                                }
-                                cnt++;
-                            }
-                        }
-                    }
-
-                    free(buf);
+                    handle_unsub(topics, client, buf);
                     continue;
                 }
             }
