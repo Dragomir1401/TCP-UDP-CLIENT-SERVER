@@ -25,63 +25,67 @@ linked_list_t *tcp_clients;
 // Topics list
 linked_list_t *topics;
 
-int main(int argc, char *argv[])
+char *prepare_message(char *buf)
 {
-    // Create list of TCP clients connected
-    linked_list_t *tcp_clients = ll_create(sizeof(tcp_client));
+    message message;
+    memcpy(message.data, "close", MAX_CONTENT_SIZE);
+    memcpy(message.topic, "close", MAX_TOPIC_SIZE);
+    message.data_type = 3;
 
-    // Create topic list
-    linked_list_t *topics = ll_create(sizeof(topic));
+    char *sender = malloc(BUFSIZ);
+    fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", buf, message.topic, message.data_type, message.data);
 
-    // Turning off buffering at stdout
-    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+    memcpy(sender, message.topic, strlen(message.topic));
+    strcpy(sender + strlen(message.topic), " - ");
+    if (message.data_type == 0)
+    {
+        strcpy(sender + strlen(message.topic) + 3, "INT");
+        strcpy(sender + strlen(message.topic) + 3 + 3, " - ");
+        memcpy(sender + strlen(message.topic) + 3 + 3 + 3, message.data, strlen(message.data));
+    }
+    else if (message.data_type == 1)
+    {
+        strcpy(sender + strlen(message.topic) + 3, "SHORT_REAL");
+        strcpy(sender + strlen(message.topic) + 3 + 10, " - ");
+        memcpy(sender + strlen(message.topic) + 3 + 10 + 3, message.data, strlen(message.data));
+    }
+    else if (message.data_type == 2)
+    {
+        strcpy(sender + strlen(message.topic) + 3, "FLOAT");
+        strcpy(sender + strlen(message.topic) + 3 + 5, " - ");
+        memcpy(sender + strlen(message.topic) + 3 + 5 + 3, message.data, strlen(message.data));
+    }
+    else if (message.data_type == 3)
+    {
+        strcpy(sender + strlen(message.topic) + 3, "STRING");
+        strcpy(sender + strlen(message.topic) + 3 + 6, " - ");
+        memcpy(sender + strlen(message.topic) + 3 + 6 + 3, message.data, strlen(message.data));
+    }
 
-    // Checking correct usage
-    DIE(argc < 2, "You need to use a port: %s server_port.", argv[0]);
+    sender[strlen(sender)] = '\0';
 
-    // Check to see if the server port is valid
-    DIE(!atoi(argv[1]), "Invalid port number.");
+    return sender;
+}
 
-    // Read TCP socket
-    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
-    DIE(tcp_socket < 0, "Unable to read TCP socket.");
-
-    // Turn off Nagle algorithm
-    int rc = setsockopt(tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
-    DIE(rc < 0, "Unable to disable Nagle algorithm.");
-
+struct sockaddr_in set_up_server_addr(char *port)
+{
     // Set up server_addr
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(atoi(argv[1]));
+    server_addr.sin_port = htons(atoi(port));
 
-    // Bind the TCP socket to address
-    rc = bind(tcp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    DIE(rc < 0, "Unable to bind TCP socket.");
+    return server_addr;
+}
 
-    // Listen to connections
-    rc = listen(tcp_socket, MAX_CONNS);
-    DIE(rc < 0, "Unable to listen on tcp socket.");
-
-    // Read UDP socket
-    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    DIE(udp_socket < 0, "Unable to read UDP socket.");
-
-    // Bind the UDP socket to address
-    rc = bind(udp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    DIE(rc < 0, "Unable to bind UDP socket.");
-
-    // Create epoll
-    int epollfd = epoll_create1(0);
-    DIE(epollfd < 0, "Unable to create epoll.");
-
+void add_epoll_events(int epollfd, int tcp_socket, int udp_socket)
+{
     // Add TCP EPOLLIN
     struct epoll_event tcp_event;
     tcp_event.data.fd = tcp_socket;
     tcp_event.events = EPOLLIN;
-    rc = epoll_ctl(epollfd, EPOLL_CTL_ADD, tcp_socket, &tcp_event);
+    int rc = epoll_ctl(epollfd, EPOLL_CTL_ADD, tcp_socket, &tcp_event);
     DIE(rc < 0, "Unable to add TCP socket to epoll instance.");
 
     // Add UDP EPOLLIN
@@ -97,38 +101,203 @@ int main(int argc, char *argv[])
     stdin_event.events = EPOLLIN;
     rc = epoll_ctl(epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &stdin_event);
     DIE(rc < 0, "Unable to add stdin socket to epoll instance.");
+}
 
-    while (1)
+int handle_stdin(int tcp_socket, int udp_socket, linked_list_t *tcp_clients)
+{
+    // Stdin reply
+    char *buf = malloc(MAX_SIZE);
+    memset(buf, 0, MAX_SIZE);
+    int rc = read(STDIN_FILENO, buf, MAX_SIZE);
+    DIE(rc == -1, "Unable to read from stdin.");
+
+    // Check to see if we need to exit the server
+    if (!strncmp(buf, "exit", EXIT_SIZE))
     {
-        struct epoll_event events[MAX_CONNS];
-        int num_events = epoll_wait(epollfd, events, MAX_CONNS, TIMEOUT);
-        DIE(num_events < 0, "Epoll wait error.");
-
-        for (int i = 0; i < num_events; i++)
+        // Send close message to all clients
+        for (ll_node_t *client = tcp_clients->head; client; client = client->next)
         {
-            if (events[i].data.fd == STDIN_FILENO)
-            {
-                // Stdin reply
-                char *buf = malloc(MAX_SIZE);
-                memset(buf, 0, MAX_SIZE);
-                rc = read(STDIN_FILENO, buf, MAX_SIZE);
-                DIE(rc == -1, "Unable to read from stdin.");
+            // Send the message
+            fprintf(stderr, "Sending close command to client %s.\n", ((tcp_client *)(client->data))->id);
+            char *sender = prepare_message(buf);
 
-                // Check to see if we need to exit the server
-                if (!strncmp(buf, "exit", EXIT_SIZE))
+            sender[strlen(sender)] = '\0';
+
+            // Send size of future message
+            char dim[10];
+            memset(dim, 0, 10);
+            sprintf(dim, "%ld", strlen(sender) + 1);
+            dim[10] = '\0';
+            send(((tcp_client *)(client->data))->socket, dim, 10, 0);
+
+            // Send actual payload
+            fprintf(stderr, "Sending: %s\n", sender);
+            rc = send(((tcp_client *)(client->data))->socket, sender, strlen(sender) + 1, 0);
+            DIE(rc < 0, "Unable to send data to TCP client.");
+
+            free(sender);
+        }
+
+        // Close server connexions with TCP clients
+        shutdown(tcp_socket, SHUT_RDWR);
+        // Close TCP socket
+        close(tcp_socket);
+        // Close UDP socket
+        close(udp_socket);
+        // Exit loop
+        exit(1);
+    }
+    else
+    {
+        printf("Invalid command.\n");
+        return -1;
+    }
+
+    return 1;
+}
+
+void check_existence(linked_list_t *tcp_clients, char *buf, int *broke, int *just_status)
+{
+    for (ll_node_t *curr = tcp_clients->head; curr; curr = curr->next)
+    {
+        // If id is already written in TCP known paired clients
+        if (!strncmp(((tcp_client *)(curr->data))->id, buf, strlen(buf)))
+        {
+            if (((tcp_client *)(curr->data))->status == 1)
+            {
+                *broke = 1;
+                // If client is up
+                printf("Client %s already connected.\n", buf);
+            }
+            else
+            {
+                fprintf(stderr, "Status set to UP for client %s.\n", buf);
+                // If client is down make it up and send data if necessary
+                ((tcp_client *)(curr->data))->status = 1;
+                *just_status = 1;
+            }
+        }
+    }
+}
+
+void set_status_to_up(linked_list_t *topics, char *buf)
+{
+    for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
+    {
+        for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
+        {
+            if (!strncmp(((tcp_client *)(sub->data))->id, buf, strlen(buf)))
+            {
+                // Modified status in topic
+                fprintf(stderr, "Modified status to UP for user %s in topic %s sub list.\n", buf, ((topic *)(curr_topic->data))->topic);
+                ((tcp_client *)(sub->data))->status = 1;
+            }
+        }
+    }
+}
+
+int handle_tcp(int tcp_socket, linked_list_t *tcp_clients, linked_list_t *topics, int epollfd)
+{
+    fprintf(stderr, "Handling TCP...\n");
+
+    // Create TCP ip address
+    struct sockaddr_in tcp_ip_addr;
+    socklen_t tcp_ip_addr_len = sizeof(tcp_ip_addr);
+
+    // TCP reply
+    int tcp_client_socket = accept(tcp_socket, (struct sockaddr *)&tcp_ip_addr, &tcp_ip_addr_len);
+    DIE(tcp_client_socket == -1, "Accept TCP connexion error.");
+
+    // Recieve id from TCP connexion
+    char *buf = malloc(MAX_SIZE);
+    memset(buf, 0, MAX_SIZE);
+    int rc = recv(tcp_client_socket, buf, sizeof(buf), 0);
+    DIE(rc < 0, "Unable to recieve TCP connection.");
+
+    int already_exists = 0;
+    int just_status = 0;
+    // Search to see if TCP client was already connected or not
+    check_existence(tcp_clients, buf, &already_exists, &just_status);
+
+    // Set status to up in topics where he was subscribed
+    set_status_to_up(topics, buf);
+
+    if (already_exists)
+    {
+        // Disconnect new client
+        // Send the close message
+        char *sender = prepare_message(buf);
+
+        // Send size of future message
+        char dim[10];
+        memset(dim, 0, 10);
+        sprintf(dim, "%ld", strlen(sender) + 1);
+        dim[10] = '\0';
+        send(tcp_client_socket, dim, 10, 0);
+
+        // Send actual payload
+        fprintf(stderr, "Sending: %s\n", sender);
+        rc = send(tcp_client_socket, sender, strlen(sender) + 1, 0);
+        DIE(rc < 0, "Unable to send data to TCP client.");
+
+        free(sender);
+        return -1;
+    }
+
+    if (!just_status)
+    { // We already have client in our list
+
+        // Create new TCP client if it was not found
+        tcp_client *new_tcp_client = malloc(sizeof(tcp_client));
+        new_tcp_client->id = malloc(strlen(buf) + 1);
+        memmove(new_tcp_client->id, buf, strlen(buf));
+        new_tcp_client->socket = tcp_client_socket;
+        new_tcp_client->status = 1;
+        new_tcp_client->topics = ll_create(MAX_TOPIC_SIZE);
+        // Initialise client sf with 0
+        new_tcp_client->sf = 0;
+
+        // Add client to end of tcp clients list
+        fprintf(stderr, "Adding new client %s to tcp client list.\n", buf);
+        ll_add_nth_node(tcp_clients, ll_get_size(tcp_clients), new_tcp_client);
+    }
+
+    // Add new connexion to epoll instance
+    struct epoll_event event;
+    event.data.fd = tcp_client_socket;
+    event.events = EPOLLIN;
+    rc = epoll_ctl(epollfd, EPOLL_CTL_ADD, tcp_client_socket, &event);
+    DIE(rc < 0, "Unable to add TCP client socket to epoll instance.");
+
+    // Disable Nagle algorithm
+    rc = setsockopt(tcp_client_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
+    DIE(rc < 0, "Unable to disable Nagle algorithm.");
+
+    // Print connection message
+    printf("New client %s connected from %s:%d.\n", buf, inet_ntoa(tcp_ip_addr.sin_addr), ntohs(tcp_ip_addr.sin_port));
+
+    // Send all data about a topic to user if it has sf on on that topic and if the topic is not fictive
+    for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
+    {
+        // If the topic is not fictive
+        if (((topic *)(curr_topic->data))->data_type != 5)
+        {
+            for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
+            {
+                // If we found out target client
+                if (!strncmp(((tcp_client *)(sub->data))->id, buf, strlen(buf)))
                 {
-                    // Send close message to all clients
-                    for (ll_node_t *client = tcp_clients->head; client; client = client->next)
+                    // If this client had sf on
+                    if (((tcp_client *)(sub->data))->sf == 1)
                     {
-                        // Send the message
-                        fprintf(stderr, "Sending close command to client %s.\n", ((tcp_client *)(client->data))->id);
+                        // Send data about the topic
                         message message;
-                        memcpy(message.data, "close", MAX_CONTENT_SIZE);
-                        memcpy(message.topic, "close", MAX_TOPIC_SIZE);
-                        message.data_type = 3;
+                        memcpy(message.data, ((topic *)curr_topic->data)->data, MAX_CONTENT_SIZE);
+                        memcpy(message.topic, ((topic *)curr_topic->data)->topic, MAX_TOPIC_SIZE);
+                        message.data_type = ((topic *)curr_topic->data)->data_type;
 
                         char *sender = malloc(BUFSIZ);
-                        fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", ((tcp_client *)client->data)->id, message.topic, message.data_type, message.data);
+                        fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", buf, message.topic, message.data_type, message.data);
 
                         memcpy(sender, message.topic, strlen(message.topic));
                         strcpy(sender + strlen(message.topic), " - ");
@@ -164,248 +333,91 @@ int main(int argc, char *argv[])
                         memset(dim, 0, 10);
                         sprintf(dim, "%ld", strlen(sender) + 1);
                         dim[10] = '\0';
-                        send(((tcp_client *)(client->data))->socket, dim, 10, 0);
+                        send(((tcp_client *)(sub->data))->socket, dim, 10, 0);
 
                         // Send actual payload
                         fprintf(stderr, "Sending: %s\n", sender);
-                        rc = send(((tcp_client *)(client->data))->socket, sender, strlen(sender) + 1, 0);
+                        rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
                         DIE(rc < 0, "Unable to send data to TCP client.");
 
                         free(sender);
                     }
+                }
+            }
+        }
+    }
 
-                    // Close server connexions with TCP clients
-                    shutdown(tcp_socket, SHUT_RDWR);
-                    // Close TCP socket
-                    close(tcp_socket);
-                    // Close UDP socket
-                    close(udp_socket);
-                    // Exit loop
-                    exit(1);
-                }
-                else
-                {
-                    printf("Invalid command.\n");
+    free(buf);
+    return 1;
+}
+
+int main(int argc, char *argv[])
+{
+    // Create list of TCP clients connected
+    linked_list_t *tcp_clients = ll_create(sizeof(tcp_client));
+
+    // Create topic list
+    linked_list_t *topics = ll_create(sizeof(topic));
+
+    // Turning off buffering at stdout
+    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+
+    // Checking correct usage
+    DIE(argc < 2, "You need to use a port: %s server_port.", argv[0]);
+
+    // Check to see if the server port is valid
+    DIE(!atoi(argv[1]), "Invalid port number.");
+
+    // Read TCP socket
+    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    DIE(tcp_socket < 0, "Unable to read TCP socket.");
+
+    // Turn off Nagle algorithm
+    int rc = setsockopt(tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
+    DIE(rc < 0, "Unable to disable Nagle algorithm.");
+
+    // Set up server_addr
+    struct sockaddr_in server_addr = set_up_server_addr(argv[1]);
+
+    // Bind the TCP socket to address
+    rc = bind(tcp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    DIE(rc < 0, "Unable to bind TCP socket.");
+
+    // Listen to connections
+    rc = listen(tcp_socket, MAX_CONNS);
+    DIE(rc < 0, "Unable to listen on tcp socket.");
+
+    // Read UDP socket
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    DIE(udp_socket < 0, "Unable to read UDP socket.");
+
+    // Bind the UDP socket to address
+    rc = bind(udp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    DIE(rc < 0, "Unable to bind UDP socket.");
+
+    // Create epoll
+    int epollfd = epoll_create1(0);
+    DIE(epollfd < 0, "Unable to create epoll.");
+
+    add_epoll_events(epollfd, tcp_socket, udp_socket);
+
+    while (1)
+    {
+        struct epoll_event events[MAX_CONNS];
+        int num_events = epoll_wait(epollfd, events, MAX_CONNS, TIMEOUT);
+        DIE(num_events < 0, "Epoll wait error.");
+
+        for (int i = 0; i < num_events; i++)
+        {
+            if (events[i].data.fd == STDIN_FILENO)
+            {
+                if (handle_stdin(tcp_socket, udp_socket, tcp_clients) == -1)
                     continue;
-                }
             }
             else if (events[i].data.fd == tcp_socket)
             {
-                fprintf(stderr, "Handling TCP...\n");
-
-                // Create TCP ip address
-                struct sockaddr_in tcp_ip_addr;
-                socklen_t tcp_ip_addr_len = sizeof(tcp_ip_addr);
-
-                // TCP reply
-                int tcp_client_socket = accept(tcp_socket, (struct sockaddr *)&tcp_ip_addr, &tcp_ip_addr_len);
-                DIE(tcp_client_socket == -1, "Accept TCP connexion error.");
-
-                // Recieve id from TCP connexion
-                char *buf = malloc(MAX_SIZE);
-                memset(buf, 0, MAX_SIZE);
-                int rc = recv(tcp_client_socket, buf, sizeof(buf), 0);
-                DIE(rc < 0, "Unable to recieve TCP connection.");
-
-                int broke = 0;
-                int just_status = 0;
-                // Search to see if TCP client was already connected or not
-                for (ll_node_t *curr = tcp_clients->head; curr; curr = curr->next)
-                {
-                    // If id is already written in TCP known paired clients
-                    if (!strncmp(((tcp_client *)(curr->data))->id, buf, strlen(buf)))
-                    {
-                        if (((tcp_client *)(curr->data))->status == 1)
-                        {
-                            broke = 1;
-                            // If client is up
-                            printf("Client %s already connected.\n", buf);
-                        }
-                        else
-                        {
-                            fprintf(stderr, "Status set to UP for client %s.\n", buf);
-                            // If client is down make it up and send data if necessary
-                            ((tcp_client *)(curr->data))->status = 1;
-                            just_status = 1;
-                        }
-                    }
-                }
-
-                // Set status to up in topics where he was subscribed
-                for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
-                {
-                    for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
-                    {
-                        if (!strncmp(((tcp_client *)(sub->data))->id, buf, strlen(buf)))
-                        {
-                            // Modified status in topic
-                            fprintf(stderr, "Modified status to UP for user %s in topic %s sub list.\n", buf, ((topic *)(curr_topic->data))->topic);
-                            ((tcp_client *)(sub->data))->status = 1;
-                        }
-                    }
-                }
-
-                if (broke)
-                {
-                    // Disconnect new client
-                    // Send the close message
-                    message message;
-                    memcpy(message.data, "close", MAX_CONTENT_SIZE);
-                    memcpy(message.topic, "close", MAX_TOPIC_SIZE);
-                    message.data_type = 3;
-
-                    char *sender = malloc(BUFSIZ);
-                    fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", buf, message.topic, message.data_type, message.data);
-
-                    memcpy(sender, message.topic, strlen(message.topic));
-                    strcpy(sender + strlen(message.topic), " - ");
-                    if (message.data_type == 0)
-                    {
-                        strcpy(sender + strlen(message.topic) + 3, "INT");
-                        strcpy(sender + strlen(message.topic) + 3 + 3, " - ");
-                        memcpy(sender + strlen(message.topic) + 3 + 3 + 3, message.data, strlen(message.data));
-                    }
-                    else if (message.data_type == 1)
-                    {
-                        strcpy(sender + strlen(message.topic) + 3, "SHORT_REAL");
-                        strcpy(sender + strlen(message.topic) + 3 + 10, " - ");
-                        memcpy(sender + strlen(message.topic) + 3 + 10 + 3, message.data, strlen(message.data));
-                    }
-                    else if (message.data_type == 2)
-                    {
-                        strcpy(sender + strlen(message.topic) + 3, "FLOAT");
-                        strcpy(sender + strlen(message.topic) + 3 + 5, " - ");
-                        memcpy(sender + strlen(message.topic) + 3 + 5 + 3, message.data, strlen(message.data));
-                    }
-                    else if (message.data_type == 3)
-                    {
-                        strcpy(sender + strlen(message.topic) + 3, "STRING");
-                        strcpy(sender + strlen(message.topic) + 3 + 6, " - ");
-                        memcpy(sender + strlen(message.topic) + 3 + 6 + 3, message.data, strlen(message.data));
-                    }
-
-                    sender[strlen(sender)] = '\0';
-
-                    // Send size of future message
-                    char dim[10];
-                    memset(dim, 0, 10);
-                    sprintf(dim, "%ld", strlen(sender) + 1);
-                    dim[10] = '\0';
-                    send(tcp_client_socket, dim, 10, 0);
-
-                    // Send actual payload
-                    fprintf(stderr, "Sending: %s\n", sender);
-                    rc = send(tcp_client_socket, sender, strlen(sender) + 1, 0);
-                    DIE(rc < 0, "Unable to send data to TCP client.");
-
-                    free(sender);
+                if (handle_tcp(tcp_socket, tcp_clients, topics, epollfd) == -1)
                     continue;
-                }
-
-                if (!just_status)
-                { // We already have client in our list
-
-                    // Create new TCP client if it was not found
-                    tcp_client *new_tcp_client = malloc(sizeof(tcp_client));
-                    new_tcp_client->id = malloc(strlen(buf) + 1);
-                    memmove(new_tcp_client->id, buf, strlen(buf));
-                    new_tcp_client->socket = tcp_client_socket;
-                    new_tcp_client->status = 1;
-                    new_tcp_client->topics = ll_create(MAX_TOPIC_SIZE);
-                    // Initialise client sf with 0
-                    new_tcp_client->sf = 0;
-
-                    // Add client to end of tcp clients list
-                    fprintf(stderr, "Adding new client %s to tcp client list.\n", buf);
-                    ll_add_nth_node(tcp_clients, ll_get_size(tcp_clients), new_tcp_client);
-                }
-
-                // Add new connexion to epoll instance
-                struct epoll_event event;
-                event.data.fd = tcp_client_socket;
-                event.events = EPOLLIN;
-                rc = epoll_ctl(epollfd, EPOLL_CTL_ADD, tcp_client_socket, &event);
-                DIE(rc < 0, "Unable to add TCP client socket to epoll instance.");
-
-                // Disable Nagle algorithm
-                rc = setsockopt(tcp_client_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
-                DIE(rc < 0, "Unable to disable Nagle algorithm.");
-
-                // Print connection message
-                printf("New client %s connected from %s:%d.\n", buf, inet_ntoa(tcp_ip_addr.sin_addr), ntohs(tcp_ip_addr.sin_port));
-
-                // Send all data about a topic to user if it has sf on on that topic and if the topic is not fictive
-                for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
-                {
-                    // If the topic is not fictive
-                    if (((topic *)(curr_topic->data))->data_type != 5)
-                    {
-                        for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
-                        {
-                            // If we found out target client
-                            if (!strncmp(((tcp_client *)(sub->data))->id, buf, strlen(buf)))
-                            {
-                                // If this client had sf on
-                                if (((tcp_client *)(sub->data))->sf == 1)
-                                {
-                                    // Send data about the topic
-                                    message message;
-                                    memcpy(message.data, ((topic *)curr_topic->data)->data, MAX_CONTENT_SIZE);
-                                    memcpy(message.topic, ((topic *)curr_topic->data)->topic, MAX_TOPIC_SIZE);
-                                    message.data_type = ((topic *)curr_topic->data)->data_type;
-
-                                    char *sender = malloc(BUFSIZ);
-                                    fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", buf, message.topic, message.data_type, message.data);
-
-                                    memcpy(sender, message.topic, strlen(message.topic));
-                                    strcpy(sender + strlen(message.topic), " - ");
-                                    if (message.data_type == 0)
-                                    {
-                                        strcpy(sender + strlen(message.topic) + 3, "INT");
-                                        strcpy(sender + strlen(message.topic) + 3 + 3, " - ");
-                                        memcpy(sender + strlen(message.topic) + 3 + 3 + 3, message.data, strlen(message.data));
-                                    }
-                                    else if (message.data_type == 1)
-                                    {
-                                        strcpy(sender + strlen(message.topic) + 3, "SHORT_REAL");
-                                        strcpy(sender + strlen(message.topic) + 3 + 10, " - ");
-                                        memcpy(sender + strlen(message.topic) + 3 + 10 + 3, message.data, strlen(message.data));
-                                    }
-                                    else if (message.data_type == 2)
-                                    {
-                                        strcpy(sender + strlen(message.topic) + 3, "FLOAT");
-                                        strcpy(sender + strlen(message.topic) + 3 + 5, " - ");
-                                        memcpy(sender + strlen(message.topic) + 3 + 5 + 3, message.data, strlen(message.data));
-                                    }
-                                    else if (message.data_type == 3)
-                                    {
-                                        strcpy(sender + strlen(message.topic) + 3, "STRING");
-                                        strcpy(sender + strlen(message.topic) + 3 + 6, " - ");
-                                        memcpy(sender + strlen(message.topic) + 3 + 6 + 3, message.data, strlen(message.data));
-                                    }
-
-                                    sender[strlen(sender)] = '\0';
-
-                                    // Send size of future message
-                                    char dim[10];
-                                    memset(dim, 0, 10);
-                                    sprintf(dim, "%ld", strlen(sender) + 1);
-                                    dim[10] = '\0';
-                                    send(((tcp_client *)(sub->data))->socket, dim, 10, 0);
-
-                                    // Send actual payload
-                                    fprintf(stderr, "Sending: %s\n", sender);
-                                    rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
-                                    DIE(rc < 0, "Unable to send data to TCP client.");
-
-                                    free(sender);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                free(buf);
             }
             else if (events[i].data.fd == udp_socket)
             {
@@ -496,11 +508,6 @@ int main(int argc, char *argv[])
 
                 // Add new topic to list of topics
                 ll_add_nth_node(topics, ll_get_size(topics), new_topic);
-                // fprintf(stderr, "Current topics in server:\n");
-                // for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
-                // {
-                //     fprintf(stderr, "%s\n", ((topic *)(curr_topic->data))->topic);
-                // }
 
                 // Send the message to all TCP clients that are up subscribed to this topic and are up
                 for (ll_node_t *client = tcp_clients->head; client; client = client->next)
