@@ -124,11 +124,8 @@ int handle_stdin(int tcp_socket, int udp_socket, linked_list_t *tcp_clients)
             sender[strlen(sender)] = '\0';
 
             // Send size of future message
-            char dim[10];
-            memset(dim, 0, 10);
-            sprintf(dim, "%ld", strlen(sender) + 1);
-            dim[10] = '\0';
-            send(((tcp_client *)(client->data))->socket, dim, 10, 0);
+            int dim = strlen(sender) + 1;
+            send(((tcp_client *)(client->data))->socket, &dim, 10, 0);
 
             // Send actual payload
             fprintf(stderr, "Sending: %s\n", sender);
@@ -250,11 +247,8 @@ void send_data_sf_on(linked_list_t *topics, char *buf)
                         char *sender = prepare_message(buf, ((topic *)curr_topic->data)->data, ((topic *)curr_topic->data)->topic, ((topic *)curr_topic->data)->data_type);
 
                         // Send size of future message
-                        char dim[10];
-                        memset(dim, 0, 10);
-                        sprintf(dim, "%ld", strlen(sender) + 1);
-                        dim[10] = '\0';
-                        send(((tcp_client *)(sub->data))->socket, dim, 10, 0);
+                        int dim = strlen(sender) + 1;
+                        send(((tcp_client *)(sub->data))->socket, &dim, sizeof(int), 0);
 
                         // Send actual payload
                         fprintf(stderr, "Sending: %s\n", sender);
@@ -302,11 +296,8 @@ int handle_tcp(int tcp_socket, linked_list_t *tcp_clients, linked_list_t *topics
         char *sender = prepare_message(buf, "close", "close", 3);
 
         // Send size of future message
-        char dim[10];
-        memset(dim, 0, 10);
-        sprintf(dim, "%ld", strlen(sender) + 1);
-        dim[10] = '\0';
-        send(tcp_client_socket, dim, 10, 0);
+        int dim = strlen(sender) + 1;
+        send(tcp_client_socket, &dim, sizeof(int), 0);
 
         // Send actual payload
         fprintf(stderr, "Sending: %s\n", sender);
@@ -443,11 +434,8 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
                     char *sender = prepare_message(buf, new_topic->data, new_topic->topic, new_topic->data_type);
 
                     // Send size of future message
-                    char dim[10];
-                    memset(dim, 0, 10);
-                    sprintf(dim, "%ld", strlen(sender) + 1);
-                    dim[10] = '\0';
-                    send(((tcp_client *)client->data)->socket, dim, 10, 0);
+                    int dim = strlen(sender) + 1;
+                    send(((tcp_client *)client->data)->socket, &dim, sizeof(int), 0);
 
                     // Send actual payload
                     fprintf(stderr, "Sending: %s\n", sender);

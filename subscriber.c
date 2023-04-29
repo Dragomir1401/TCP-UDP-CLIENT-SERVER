@@ -75,6 +75,7 @@ int main(int argc, char *argv[])
     prepare_conn(argc, argv, &tcp_socket, &epollfd, &eventfd);
 
     int dim_size = 10;
+    int recieved_packets = 0;
     while (1)
     {
         struct epoll_event events[MAX_CONNS];
@@ -99,6 +100,8 @@ int main(int argc, char *argv[])
                     // Send subscribe buffer to server
                     send(tcp_socket, buf, strlen(buf), 0);
 
+                    printf("Recieved %d packets.\n", recieved_packets);
+
                     // Close TCP socket
                     close(tcp_socket);
                     // Exit loop
@@ -107,7 +110,8 @@ int main(int argc, char *argv[])
                 else if (!strncmp(buf, "subscribe", SUBSCRIBE_COMMAND_LEN))
                 {
                     fprintf(stderr, "Subscriber sends %s", buf);
-                    printf("Subscribed to topic.\n");
+                    fprintf(stderr,
+                            "Subscribed to topic.\n");
 
                     // Send subscribe buffer to server
                     send(tcp_socket, buf, strlen(buf), 0);
@@ -131,10 +135,34 @@ int main(int argc, char *argv[])
             else if (events[i].data.fd == tcp_socket)
             {
                 char *buf = malloc(BUFSIZ);
+                char *size_buf = malloc(BUFSIZ);
+                memset(buf, 0, BUFSIZ);
+                memset(size_buf, 0, BUFSIZ);
+
                 // Recieve future message size
                 memset(buf, 0, BUFSIZ);
-                int rc = recv(tcp_socket, buf, dim_size, 0);
-                DIE(rc < 0, "Unable to receive data from the server.");
+
+                int rc = 0;
+                rc = recv(tcp_socket, size_buf, sizeof(int), MSG_DONTWAIT);
+
+                int read_size = 0;
+                rc = 0;
+                do
+                {
+                    rc = recv(tcp_socket, buf + read_size, dim_size, MSG_DONTWAIT);
+                    read_size += rc;
+                    // fprintf(stderr, "Read size: %d\n", read_size);
+                    // fprintf(stderr, "Subscriber recieved %s.\n", buf + read_size);
+                } while (rc > 0);
+
+                if (read_size == 0)
+                {
+                    fprintf(stderr, "Server closed connection.\n");
+                    close(tcp_socket);
+                    exit(1);
+                    rc = -1;
+                    continue;
+                }
 
                 if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
                 {
@@ -142,20 +170,22 @@ int main(int argc, char *argv[])
                 }
 
                 // Modify incoming big message size
-                if (dim_size == 10)
-                {
-                    dim_size = atoi(buf);
-                    continue;
-                }
+                // if (dim_size == 10)
+                // {
+                //     dim_size = atoi(buf);
+                //     continue;
+                // }
 
                 // We received data from the server and need to show it
-                if (rc > 0)
-                {
-                    printf("%s\n", buf);
-                    dim_size = 10;
-                }
+                // if (rc > 0)
+                // {
+                recieved_packets++;
+                printf("%s\n", buf);
+                // dim_size = 10;
+                // }
 
                 free(buf);
+                free(size_buf);
             }
         }
     }
