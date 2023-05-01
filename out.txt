@@ -1,0 +1,96 @@
+rm -rf server.o linked_list.o subscriber.o server subscriber
+gcc -Iinclude -g -c -Wall -Werror -Wno-error=unused-variable -fPIC server.c -o server.o
+gcc -Iinclude -g -c -Wall -Werror -Wno-error=unused-variable -fPIC linked_list.c -o linked_list.o
+gcc -L. server.o linked_list.o -o server
+gcc -Iinclude -g -c -Wall -Werror -Wno-error=unused-variable -fPIC subscriber.c -o subscriber.o
+gcc -L. subscriber.o -o subscriber
+Compiling
+Starting the server
+Starting subscriber C1
+Handling TCP...
+
+Generating one message for each topic
+Client source PORT: 59658
+
+
+
+Sent (56/56 bytes) << topic {a_negative_int} - type {INT} - value{-10} >>
+
+Sent (56/56 bytes) << topic {a_large_negative_value} - type {INT} - value{-1234567890} >>
+
+Sent (53/53 bytes) << topic {that_is_small_short_real} - type {SHORT_REAL} - value{2.30} >>
+
+Sent (53/53 bytes) << topic {that_is_integer_short_real} - type {SHORT_REAL} - value{17 / 17.00} >>
+
+Sent (57/57 bytes) << topic {float_minus_seventeen} - type {FLOAT} - value{-17} >>
+
+Sent (57/57 bytes) << topic {a_negative_strange_float} - type {FLOAT} - value{-1234.4321} >>
+
+Sent (57/57 bytes) << topic {a_negative_subunitary_float} - type {FLOAT} - value{-0.042} >>
+
+Sent (1551/1551 bytes) << topic {huge_string} - type {STRING} - value{<1500 chars of "abc...">} >>
+
+
+
+
+
+
+
+
+
+
+Recieved UDP topic a_non_negative_int with data_type 0 with data 10.
+
+Error: server printing [Recieved UDP topic a_negative_int with data_type 0 with data -10.]
+Subscribing C1 to all topics without SF
+Subscriber sends subscribe a_non_negative_int 0
+
+Subscriber sends subscribe a_negative_int 0
+
+Received from the server: 10-10.
+
+Error: C1 not subscribed to all topics
+Generating one message for each topic
+Client source PORT: 39814
+
+
+
+Sent (56/56 bytes) << topic {a_negative_int} - type {INT} - value{-10} >>
+
+Sent (56/56 bytes) << topic {a_large_negative_value} - type {INT} - value{-1234567890} >>
+
+Sent (53/53 bytes) << topic {that_is_small_short_real} - type {SHORT_REAL} - value{2.30} >>
+
+Sent (53/53 bytes) << topic {that_is_integer_short_real} - type {SHORT_REAL} - value{17 / 17.00} >>
+
+Sent (57/57 bytes) << topic {float_minus_seventeen} - type {FLOAT} - value{-17} >>
+
+Sent (57/57 bytes) << topic {a_negative_strange_float} - type {FLOAT} - value{-1234.4321} >>
+
+Sent (57/57 bytes) << topic {a_negative_subunitary_float} - type {FLOAT} - value{-0.042} >>
+
+Sent (1551/1551 bytes) << topic {huge_string} - type {STRING} - value{<1500 chars of "abc...">} >>
+
+
+
+
+
+
+
+
+
+
+Subscribed to topic.
+
+Error: C1 output should contain [a_non_negative_int - INT - 10], is actually [Received from the server: 1234567890.]
+Received from the server: 10-101234567890.
+
+Error: C1 output should contain [a_negative_int - INT - -10], is actually [timeout]
+Error: C1 output should contain [a_larger_value - INT - 1234567890], is actually [timeout]
+Error: C1 output should contain [a_large_negative_value - INT - -1234567890], is actually [timeout]
+Error: C1 output should contain [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwx - INT - 10], is actually [timeout]
+Error: C1 output should contain [that_is_small_short_real - SHORT_REAL - 2.30], is actually [timeout]
+Error: C1 output should contain [that_is_big_short_real - SHORT_REAL - 655.05], is actually [timeout]
+Error: C1 output should contain [that_is_integer_short_real - SHORT_REAL - 17], is actually [timeout]
+Error: C1 output should contain [float_seventeen - FLOAT - 17], is actually [timeout]
+Error: C1 output should contain [float_minus_seventeen - FLOAT - -17], is actually [timeout]

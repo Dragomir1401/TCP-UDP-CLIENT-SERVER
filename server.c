@@ -121,11 +121,13 @@ int handle_stdin(int tcp_socket, int udp_socket, linked_list_t *tcp_clients)
             fprintf(stderr, "Sending close command to client %s.\n", ((tcp_client *)(client->data))->id);
             char *sender = prepare_message(buf, "close", "close", 3);
 
-            sender[strlen(sender)] = '\0';
-
             // Send size of future message
-            int dim = strlen(sender) + 1;
-            send(((tcp_client *)(client->data))->socket, &dim, 10, 0);
+            char dim[sizeof(int)];
+            memset(dim, 0, sizeof(int));
+            sprintf(dim, "%ld", strlen(sender) + 1);
+            dim[sizeof(int)] = '\0';
+            int rc = send(((tcp_client *)(client->data))->socket, dim, sizeof(int), 0);
+            DIE(rc < 0, "Unable to send data to TCP client.");
 
             // Send actual payload
             fprintf(stderr, "Sending: %s\n", sender);
@@ -232,8 +234,8 @@ void send_data_sf_on(linked_list_t *topics, char *buf)
     // Send all data about a topic to user if it has sf on on that topic and if the topic is not fictive
     for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
     {
-        // If the topic is not fictive
-        if (((topic *)(curr_topic->data))->data_type != 5)
+        // If the topic is not fictive and not delivered yet
+        if (((topic *)(curr_topic->data))->data_type != 5 && ((topic *)(curr_topic->data))->delivered == 0)
         {
             for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
             {
@@ -247,12 +249,17 @@ void send_data_sf_on(linked_list_t *topics, char *buf)
                         char *sender = prepare_message(buf, ((topic *)curr_topic->data)->data, ((topic *)curr_topic->data)->topic, ((topic *)curr_topic->data)->data_type);
 
                         // Send size of future message
-                        int dim = strlen(sender) + 1;
-                        send(((tcp_client *)(sub->data))->socket, &dim, sizeof(int), 0);
+                        char dim[sizeof(int)];
+                        memset(dim, 0, sizeof(int));
+                        sprintf(dim, "%ld", strlen(sender) + 1);
+                        dim[sizeof(int)] = '\0';
+                        int rc = send(((tcp_client *)(sub->data))->socket, dim, sizeof(int), 0);
+                        DIE(rc < 0, "Unable to send data to TCP client.");
 
                         // Send actual payload
                         fprintf(stderr, "Sending: %s\n", sender);
-                        int rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
+                        ((topic *)curr_topic->data)->delivered = 1;
+                        rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
                         DIE(rc < 0, "Unable to send data to TCP client.");
 
                         free(sender);
@@ -296,8 +303,12 @@ int handle_tcp(int tcp_socket, linked_list_t *tcp_clients, linked_list_t *topics
         char *sender = prepare_message(buf, "close", "close", 3);
 
         // Send size of future message
-        int dim = strlen(sender) + 1;
-        send(tcp_client_socket, &dim, sizeof(int), 0);
+        char dim[sizeof(int)];
+        memset(dim, 0, sizeof(int));
+        sprintf(dim, "%ld", strlen(sender) + 1);
+        dim[sizeof(int)] = '\0';
+        int rc = send(tcp_client_socket, dim, sizeof(int), 0);
+        DIE(rc < 0, "Unable to send data to TCP client.");
 
         // Send actual payload
         fprintf(stderr, "Sending: %s\n", sender);
@@ -326,7 +337,6 @@ int handle_tcp(int tcp_socket, linked_list_t *tcp_clients, linked_list_t *topics
 void create_new_topic(char *buf, struct sockaddr_in *client_addr, topic *new_topic)
 {
     memmove(new_topic->topic, buf, MAX_TOPIC_SIZE);
-    // new_topic->topic[MAX_TOPIC_SIZE] = '\0';
     memmove(&new_topic->data_type, buf + MAX_TOPIC_SIZE, DATA_TYPE_SIZE);
 
     if (new_topic->data_type == 3)
@@ -372,9 +382,10 @@ void create_new_topic(char *buf, struct sockaddr_in *client_addr, topic *new_top
 
     new_topic->addr = client_addr;
     new_topic->subscribers = ll_create(sizeof(tcp_client));
+    new_topic->delivered = 0;
 }
 
-void add_fictive_topic(linked_list_t *topics, topic *new_topic)
+void pass_fictive_topic(linked_list_t *topics, topic *new_topic)
 {
     for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
     {
@@ -399,23 +410,26 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
     // Recieve message from UDP connexion; sender keeps the address from where we received data
     char *buf = malloc(MAX_SIZE);
     memset(buf, 0, MAX_SIZE);
+
     struct sockaddr_in *client_addr = malloc(sizeof(struct sockaddr));
     memset(&client_addr, 0, sizeof(client_addr));
     socklen_t client_addr_len;
-    int rc = recvfrom(recv_fd, buf, MAX_SIZE, 0, (struct sockaddr *)&client_addr, &client_addr_len);
+
+    int rc = recvfrom(recv_fd, buf, MAX_SIZE, MSG_WAITALL, (struct sockaddr *)&client_addr, &client_addr_len);
     DIE(rc < 0, "Unable to recieve UDP message.");
 
     // Create new topic based on what we recieved from UDP client
     topic *new_topic = malloc(sizeof(topic));
     create_new_topic(buf, client_addr, new_topic);
 
-    fprintf(stderr, "Recieved UDP topic %s with data_type %d with data %s.\n", new_topic->topic, new_topic->data_type, new_topic->data);
-    // Add fictive topic subscribed users to real topic
-    // Iterate to see if we find a fictive topic we have to take users from
-    add_fictive_topic(topics, new_topic);
-
-    // Add new topic to list of topics
-    ll_add_nth_node(topics, ll_get_size(topics), new_topic);
+    if (strlen(new_topic->data) > MAX_TOPIC_SIZE)
+    {
+        fprintf(stderr, "Recieved UDP topic %s with data_type %d with data TOO LONG TO INCLUDE.\n", new_topic->topic, new_topic->data_type);
+    }
+    else
+    {
+        fprintf(stderr, "Recieved UDP topic %s with data_type %d with data %s.\n", new_topic->topic, new_topic->data_type, new_topic->data);
+    }
 
     // Send the message to all TCP clients that are up subscribed to this topic and are up
     for (ll_node_t *client = tcp_clients->head; client; client = client->next)
@@ -434,11 +448,16 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
                     char *sender = prepare_message(buf, new_topic->data, new_topic->topic, new_topic->data_type);
 
                     // Send size of future message
-                    int dim = strlen(sender) + 1;
-                    send(((tcp_client *)client->data)->socket, &dim, sizeof(int), 0);
+                    char dim[sizeof(int)];
+                    memset(dim, 0, sizeof(int));
+                    sprintf(dim, "%ld", strlen(sender) + 1);
+                    dim[sizeof(int)] = '\0';
+                    int rc = send(((tcp_client *)client->data)->socket, dim, sizeof(int), 0);
+                    DIE(rc < 0, "Unable to send data to TCP client.");
 
                     // Send actual payload
                     fprintf(stderr, "Sending: %s\n", sender);
+                    new_topic->delivered = 1;
                     rc = send(((tcp_client *)client->data)->socket, sender, strlen(sender) + 1, 0);
                     DIE(rc < 0, "Unable to send data to TCP client.");
 
@@ -447,6 +466,13 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
             }
         }
     }
+
+    // Add fictive topic subscribed users to real topic
+    // Iterate to see if we find a fictive topic we have to take users from
+    pass_fictive_topic(topics, new_topic);
+
+    // Add new topic to list of topics
+    ll_add_nth_node(topics, ll_get_size(topics), new_topic);
 
     free(buf);
 
@@ -548,6 +574,7 @@ int handle_sub(linked_list_t *topics, tcp_client *client, char *buf)
     fictive->data_type = 5; // Mark as fictive using 5 in data type
     memmove(fictive->topic, topic_targeted, strlen(topic_targeted));
     fictive->subscribers = ll_create(sizeof(tcp_client));
+    fictive->delivered = 0;
     ll_add_nth_node(fictive->subscribers, ll_get_size(fictive->subscribers), client);
 
     // Add fictive topic to topic list

@@ -1,0 +1,68 @@
+ // // Send all data about a topic to user if it has sf on on that topic
+                    // for (ll_node_t *curr_topic = topics->head; curr_topic; curr_topic = curr_topic->next)
+                    // {
+                    //     for (ll_node_t *sub = ((topic *)curr_topic->data)->subscribers->head; sub; sub = sub->next)
+                    //     {
+                    //         // If we found out target client
+                    //         fprintf(stderr, "TARGET :: %s  CURR :: %s\n", buf, ((tcp_client *)(sub->data))->id);
+                    //         if (!strncmp(((tcp_client *)(sub->data))->id, buf, strlen(buf)))
+                    //         {
+                    //             fprintf(stderr, "sunt acilisa\n");
+                    //             // If this client had sf on
+                    //             if (((tcp_client *)(sub->data))->sf == 1)
+                    //             {
+                    //                 // Send data about the topic
+                    //                 message message;
+                    //                 memcpy(message.data, ((topic *)curr_topic->data)->data, MAX_CONTENT_SIZE);
+                    //                 memcpy(message.topic, ((topic *)curr_topic->data)->topic, MAX_TOPIC_SIZE);
+                    //                 message.data_type = ((topic *)curr_topic->data)->data_type;
+
+                    //                 char *sender = malloc(BUFSIZ);
+                    //                 fprintf(stderr, "Sending to client %s topic %s with data_type %d with data %s.\n", buf, message.topic, message.data_type, message.data);
+
+                    //                 memcpy(sender, message.topic, strlen(message.topic));
+                    //                 strcpy(sender + strlen(message.topic), " - ");
+                    //                 if (message.data_type == 0)
+                    //                 {
+                    //                     strcpy(sender + strlen(message.topic) + 3, "INT");
+                    //                     strcpy(sender + strlen(message.topic) + 3 + 3, " - ");
+                    //                     memcpy(sender + strlen(message.topic) + 3 + 3 + 3, message.data, strlen(message.data));
+                    //                 }
+                    //                 else if (message.data_type == 1)
+                    //                 {
+                    //                     strcpy(sender + strlen(message.topic) + 3, "SHORT_REAL");
+                    //                     strcpy(sender + strlen(message.topic) + 3 + 10, " - ");
+                    //                     memcpy(sender + strlen(message.topic) + 3 + 10 + 3, message.data, strlen(message.data));
+                    //                 }
+                    //                 else if (message.data_type == 2)
+                    //                 {
+                    //                     strcpy(sender + strlen(message.topic) + 3, "FLOAT");
+                    //                     strcpy(sender + strlen(message.topic) + 3 + 5, " - ");
+                    //                     memcpy(sender + strlen(message.topic) + 3 + 5 + 3, message.data, strlen(message.data));
+                    //                 }
+                    //                 else if (message.data_type == 3)
+                    //                 {
+                    //                     strcpy(sender + strlen(message.topic) + 3, "STRING");
+                    //                     strcpy(sender + strlen(message.topic) + 3 + 6, " - ");
+                    //                     memcpy(sender + strlen(message.topic) + 3 + 6 + 3, message.data, strlen(message.data));
+                    //                 }
+
+                    //                 sender[strlen(sender)] = '\0';
+
+                    //                 // Send size of future message
+                    //                 char dim[10];
+                    //                 memset(dim, 0, 10);
+                    //                 sprintf(dim, "%ld", strlen(sender) + 1);
+                    //                 dim[10] = '\0';
+                    //                 send(((tcp_client *)(sub->data))->socket, dim, 10, 0);
+
+                    //                 // Send actual payload
+                    //                 fprintf(stderr, "Sending: %s\n", sender);
+                    //                 rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
+                    //                 DIE(rc < 0, "Unable to send data to TCP client.");
+
+                    //                 free(sender);
+                    //             }
+                    //         }
+                    //     }
+                    // }
