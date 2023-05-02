@@ -160,37 +160,7 @@ int main(int argc, char *argv[])
                     recieved_packets++;
                 }
 
-                // fprintf(stderr, "Incoming packet of size: %d\n", ntohl(atoi(size_buf)));
-
-                // int read_size = 0;
-                // rc = 0;
-                // do
-                // {
-                //     rc = recv(tcp_socket, buf + read_size, dim_size, 0);
-                //     read_size += rc;
-                //     // fprintf(stderr, "Read size: %d\n", read_size);
-                //     // fprintf(stderr, "Subscriber recieved %s.\n", buf + read_size);
-                // } while (read_size <= atoi(size_buf));
-
-                // rc = recv(tcp_socket, buf, ntohl(atoi(size_buf)), 0);
-                // if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
-                // {
-                //     return 0;
-                // }
-
-                // if (rc == 0)
-                // {
-                //     fprintf(stderr, "Server closed connection.\n");
-                //     close(tcp_socket);
-                //     exit(1);
-                //     continue;
-                // }
-
-                // recieved_packets++;
-                // printf("%s\n", buf);
-
                 free(buf);
-                // free(size_buf);
             }
         }
     }
