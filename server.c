@@ -124,14 +124,14 @@ int handle_stdin(int tcp_socket, int udp_socket, linked_list_t *tcp_clients)
             // Send size of future message
             char dim[sizeof(int)];
             memset(dim, 0, sizeof(int));
-            sprintf(dim, "%ld", strlen(sender) + 1);
+            sprintf(dim, "%ld", strlen(sender));
             dim[sizeof(int)] = '\0';
             int rc = send(((tcp_client *)(client->data))->socket, dim, sizeof(int), 0);
             DIE(rc < 0, "Unable to send data to TCP client.");
 
             // Send actual payload
             fprintf(stderr, "Sending: %s\n", sender);
-            rc = send(((tcp_client *)(client->data))->socket, sender, strlen(sender) + 1, 0);
+            rc = send(((tcp_client *)(client->data))->socket, sender, strlen(sender), 0);
             DIE(rc < 0, "Unable to send data to TCP client.");
 
             free(sender);
@@ -251,15 +251,15 @@ void send_data_sf_on(linked_list_t *topics, char *buf)
                         // Send size of future message
                         char dim[sizeof(int)];
                         memset(dim, 0, sizeof(int));
-                        sprintf(dim, "%ld", strlen(sender) + 1);
+                        sprintf(dim, "%ld", strlen(sender));
                         dim[sizeof(int)] = '\0';
                         int rc = send(((tcp_client *)(sub->data))->socket, dim, sizeof(int), 0);
                         DIE(rc < 0, "Unable to send data to TCP client.");
 
                         // Send actual payload
                         fprintf(stderr, "Sending: %s\n", sender);
-                        ((topic *)curr_topic->data)->delivered = 1;
-                        rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender) + 1, 0);
+                        // ((topic *)curr_topic->data)->delivered = 1;
+                        rc = send(((tcp_client *)(sub->data))->socket, sender, strlen(sender), 0);
                         DIE(rc < 0, "Unable to send data to TCP client.");
 
                         free(sender);
@@ -305,14 +305,14 @@ int handle_tcp(int tcp_socket, linked_list_t *tcp_clients, linked_list_t *topics
         // Send size of future message
         char dim[sizeof(int)];
         memset(dim, 0, sizeof(int));
-        sprintf(dim, "%ld", strlen(sender) + 1);
+        sprintf(dim, "%ld", strlen(sender));
         dim[sizeof(int)] = '\0';
         int rc = send(tcp_client_socket, dim, sizeof(int), 0);
         DIE(rc < 0, "Unable to send data to TCP client.");
 
         // Send actual payload
         fprintf(stderr, "Sending: %s\n", sender);
-        rc = send(tcp_client_socket, sender, strlen(sender) + 1, 0);
+        rc = send(tcp_client_socket, sender, strlen(sender), 0);
         DIE(rc < 0, "Unable to send data to TCP client.");
 
         free(sender);
@@ -398,6 +398,7 @@ void pass_fictive_topic(linked_list_t *topics, topic *new_topic)
             {
                 ll_add_nth_node(new_topic->subscribers, usr_cnt, ((tcp_client *)curr_user->data));
                 usr_cnt++;
+                fprintf(stderr, "Added user %s from fictive to new real topic %s\n", ((tcp_client *)curr_user->data)->id, new_topic->topic);
             }
         }
     }
@@ -431,15 +432,18 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
         fprintf(stderr, "Recieved UDP topic %s with data_type %d with data %s.\n", new_topic->topic, new_topic->data_type, new_topic->data);
     }
 
+    int check_delivered = 0;
     // Send the message to all TCP clients that are up subscribed to this topic and are up
     for (ll_node_t *client = tcp_clients->head; client; client = client->next)
     {
-        if (((tcp_client *)client->data)->status == 1)
+
+        for (ll_node_t *curr_topic = (((tcp_client *)client->data)->topics)->head; curr_topic; curr_topic = curr_topic->next)
         {
-            for (ll_node_t *curr_topic = (((tcp_client *)client->data)->topics)->head; curr_topic; curr_topic = curr_topic->next)
+            // If TCP client follows this topic
+            if (!strncmp((char *)(curr_topic->data), new_topic->topic, strlen(new_topic->topic)))
             {
-                // If TCP client follows this topic
-                if (!strncmp((char *)(curr_topic->data), new_topic->topic, strlen(new_topic->topic)))
+                // If client is up send the message
+                if (((tcp_client *)client->data)->status == 1)
                 {
                     // Add client to topics subscribers
                     ll_add_nth_node(new_topic->subscribers, ll_get_size(new_topic->subscribers), client);
@@ -450,29 +454,57 @@ int handle_udp(int recv_fd, linked_list_t *topics, linked_list_t *tcp_clients)
                     // Send size of future message
                     char dim[sizeof(int)];
                     memset(dim, 0, sizeof(int));
-                    sprintf(dim, "%ld", strlen(sender) + 1);
+                    sprintf(dim, "%ld", strlen(sender));
                     dim[sizeof(int)] = '\0';
                     int rc = send(((tcp_client *)client->data)->socket, dim, sizeof(int), 0);
                     DIE(rc < 0, "Unable to send data to TCP client.");
 
                     // Send actual payload
                     fprintf(stderr, "Sending: %s\n", sender);
-                    new_topic->delivered = 1;
-                    rc = send(((tcp_client *)client->data)->socket, sender, strlen(sender) + 1, 0);
+                    rc = send(((tcp_client *)client->data)->socket, sender, strlen(sender), 0);
                     DIE(rc < 0, "Unable to send data to TCP client.");
 
                     free(sender);
+                }
+                else
+                {
+                    if (((tcp_client *)client->data)->sf == 1)
+                    {
+                        // If sf is on and status down it means there still are clients to receive this topic
+                        check_delivered = 1;
+                    }
                 }
             }
         }
     }
 
+    if (check_delivered)
+    {
+        new_topic->delivered = 0;
+    }
+    else
+    {
+        new_topic->delivered = 1;
+    }
+
+    // for (ll_node_t *curr_client = tcp_clients->head; curr_client; curr_client = curr_client->next)
+    // {
+    //     if (((tcp_client *)(curr_client->data))->sf == 1 && ((tcp_client *)(curr_client->data))->status == 0)
+    //     {
+    //         // If sf is on and status up it means there still are clients to receive this topic
+    //         ((topic *)new_topic->data)->delivered = 0;
+    //     }
+    // }
+
     // Add fictive topic subscribed users to real topic
     // Iterate to see if we find a fictive topic we have to take users from
     pass_fictive_topic(topics, new_topic);
 
-    // Add new topic to list of topics
-    ll_add_nth_node(topics, ll_get_size(topics), new_topic);
+    // Add new topic to list of topics if not delivered
+    if (new_topic->delivered == 0)
+    {
+        ll_add_nth_node(topics, ll_get_size(topics), new_topic);
+    }
 
     free(buf);
 
@@ -526,8 +558,8 @@ void subscribe_user_to_topic(linked_list_t *topics, tcp_client *client, char *to
 {
     for (ll_node_t *curr = topics->head; curr; curr = curr->next)
     {
-        // If topic exists in list
-        if (!strncmp(topic_targeted, ((topic *)(curr->data))->topic, strlen(topic_targeted)))
+        // If topic exists in list and is not a fictive topic
+        if (!strncmp(topic_targeted, ((topic *)(curr->data))->topic, strlen(topic_targeted)) && ((topic *)(curr->data))->data_type != 5)
         {
             // Add client to topic subscribed clients if not present already eventually modify sf
             int exists = 0;
@@ -569,16 +601,49 @@ int handle_sub(linked_list_t *topics, tcp_client *client, char *buf)
     // Subscribe user tot topic
     subscribe_user_to_topic(topics, client, topic_targeted, sf);
 
-    // Create fictive topic with pre subscribed users and add it to topics then delete it when we find the real one
-    topic *fictive = malloc(sizeof(topic));
-    fictive->data_type = 5; // Mark as fictive using 5 in data type
-    memmove(fictive->topic, topic_targeted, strlen(topic_targeted));
-    fictive->subscribers = ll_create(sizeof(tcp_client));
-    fictive->delivered = 0;
-    ll_add_nth_node(fictive->subscribers, ll_get_size(fictive->subscribers), client);
+    int fictive_exists = 0;
+    // Add user to fictive topic subs if exits else create a fictive topic
+    for (ll_node_t *curr = topics->head; curr; curr = curr->next)
+    {
+        // If topic exists in list and is a fictive topic
+        if (!strncmp(topic_targeted, ((topic *)(curr->data))->topic, strlen(topic_targeted)) && ((topic *)(curr->data))->data_type == 5)
+        {
+            fictive_exists = 1;
+            // Add client to topic subscribed clients if not present already eventually modify sf
+            int exists = 0;
+            for (ll_node_t *sub = ((topic *)(curr->data))->subscribers->head; sub; sub = sub->next)
+            {
+                if (!strncmp(((tcp_client *)sub->data)->id, client->id, strlen(client->id)))
+                {
+                    // It already exists in list, update sf
+                    fprintf(stderr, "Client %s is already subscribed to topic %s. Updating sf...\n", client->id, topic_targeted);
+                    exists = 1;
+                    ((tcp_client *)sub->data)->sf = atoi(sf);
+                }
+            }
+            if (!exists)
+            {
+                fprintf(stderr, "Adding client %s to list of clients for topic %s.\n", client->id, topic_targeted);
+                ll_add_nth_node(((topic *)(curr->data))->subscribers, ll_get_size(((topic *)(curr->data))->subscribers), client);
+            }
 
-    // Add fictive topic to topic list
-    ll_add_nth_node(topics, ll_get_size(topics), fictive);
+            break;
+        }
+    }
+
+    if (!fictive_exists)
+    {
+        // Create fictive topic with pre subscribed users and add it to topics then delete it when we find the real one
+        topic *fictive = malloc(sizeof(topic));
+        fictive->data_type = 5; // Mark as fictive using 5 in data type
+        memmove(fictive->topic, topic_targeted, strlen(topic_targeted));
+        fictive->subscribers = ll_create(sizeof(tcp_client));
+        fictive->delivered = 0;
+        ll_add_nth_node(fictive->subscribers, ll_get_size(fictive->subscribers), client);
+
+        // Add fictive topic to topic list
+        ll_add_nth_node(topics, ll_get_size(topics), fictive);
+    }
 
     // Add it to client subscribed topics if it is not already there
     fprintf(stderr, "Adding topic %s to list of topics for user %s.\n", topic_targeted, client->id);
