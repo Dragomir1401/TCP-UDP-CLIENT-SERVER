@@ -41,7 +41,8 @@ void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *ev
     DIE(rc < 0, "Unable to connect to server.");
 
     // Turn off Nagle algorithm
-    rc = setsockopt(*tcp_socket, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
+    int yes = 1;
+    rc = setsockopt(*tcp_socket, IPPROTO_TCP, TCP_NODELAY, (char *)&yes, sizeof(int));
     DIE(rc < 0, "Unable to disable Nagle algorithm.");
 
     // Send client ID to the server
@@ -69,6 +70,36 @@ void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *ev
     DIE(rc < 0, "Unable to add stdin socket to epoll instance.");
 }
 
+int recv_all(int sockfd, char *buffer, size_t len)
+{
+    int size;
+    int rc = recv(sockfd, &size, sizeof(int), 0);
+    DIE(rc < 0, "Unable to receive size of message.");
+
+    size_t bytes_received = 0;
+    size_t bytes_remaining = size;
+    char *buff = buffer;
+    while (bytes_remaining)
+    {
+        // TODO: Make the magic happen
+        int rc = recv(sockfd, buff + bytes_received, bytes_remaining, 0);
+        // rc == 0 -> conn closed
+        // rc < 0 -> error
+        // rc = no of bytes recieved
+
+        if (rc < 0)
+        {
+            printf("Unable to recv.\n");
+            break;
+        }
+
+        bytes_received += rc;
+        bytes_remaining -= rc;
+    }
+
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     int tcp_socket, epollfd, eventfd;
@@ -79,7 +110,7 @@ int main(int argc, char *argv[])
     while (1)
     {
         struct epoll_event events[MAX_CONNS];
-        int num_events = epoll_wait(epollfd, events, MAX_CONNS, TIMEOUT);
+        int num_events = epoll_wait(epollfd, events, MAX_CONNS, -1);
         DIE(num_events < 0, "Epoll wait error.");
 
         for (int i = 0; i < num_events; i++)
@@ -138,7 +169,7 @@ int main(int argc, char *argv[])
                 memset(buf, 0, BUFSIZ);
                 // memset(size_buf, 0, BUFSIZ);
 
-                int rc = recv(tcp_socket, buf, read_size, 0);
+                int rc = recv_all(tcp_socket, buf, read_size);
                 DIE(rc < 0, "Unable to read from TCP socket.");
 
                 if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
@@ -146,21 +177,51 @@ int main(int argc, char *argv[])
                     return 0;
                 }
 
-                if (read_size == sizeof(int))
-                {
-                    read_size = atoi(buf);
-                    fprintf(stderr, "Incoming message of size %d.\n", read_size);
-                    continue;
-                }
+                // if (read_size == sizeof(int))
+                // {
+                //     read_size = atoi(buf);
+                //     fprintf(stderr, "Incoming message of size %d.\n", read_size);
+                //     continue;
+                // }
 
-                if (rc != 0)
+                if (!rc)
                 {
                     printf("%s\n", buf);
                     read_size = sizeof(int);
                     recieved_packets++;
                 }
 
+                // fprintf(stderr, "Incoming packet of size: %d\n", ntohl(atoi(size_buf)));
+
+                // int read_size = 0;
+                // rc = 0;
+                // do
+                // {
+                //     rc = recv(tcp_socket, buf + read_size, dim_size, 0);
+                //     read_size += rc;
+                //     // fprintf(stderr, "Read size: %d\n", read_size);
+                //     // fprintf(stderr, "Subscriber recieved %s.\n", buf + read_size);
+                // } while (read_size <= atoi(size_buf));
+
+                // rc = recv(tcp_socket, buf, ntohl(atoi(size_buf)), 0);
+                // if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
+                // {
+                //     return 0;
+                // }
+
+                // if (rc == 0)
+                // {
+                //     fprintf(stderr, "Server closed connection.\n");
+                //     close(tcp_socket);
+                //     exit(1);
+                //     continue;
+                // }
+
+                // recieved_packets++;
+                // printf("%s\n", buf);
+
                 free(buf);
+                // free(size_buf);
             }
         }
     }
