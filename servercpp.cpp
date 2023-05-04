@@ -5,6 +5,8 @@
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
+#include <algorithm>
+#include <iterator>
 #include "protocols.h"
 #include <sys/stat.h>
 #include <sys/epoll.h>
@@ -59,27 +61,21 @@ void disconnect_client(int sockfd)
     free(buffer);
 }
 
-bool hasKeyV1(unordered_map<string, queue<message>> map, string key)
+bool hasKeyV1(const unordered_map<string, queue<message>> &map, const string &key)
 {
-    if (map.size() == 0)
+    for (auto it = map.cbegin(); it != map.cend(); ++it)
     {
-        return false;
+        if (it->first == key)
+        {
+            return true;
+        }
     }
-
-    if (map.count(key) == 0)
-    {
-        return false;
-    }
-    return true;
+    return false;
 }
 
 bool hasKeyV2(unordered_map<string, int> map, string key)
 {
-    if (map.count(key) == 0)
-    {
-        return false;
-    }
-    return true;
+    return map.count(key) ? true : false;
 }
 
 void send_message(message msg, int sockfd)
@@ -104,6 +100,28 @@ void send_message(message msg, int sockfd)
     free(buffer);
 }
 
+void activate_client(unordered_map<string, queue<message>> &inactive_list, tcp_client &client)
+{
+    client.active = true;
+
+    // If client has inactive messages, send them
+    if (hasKeyV1(inactive_list, client.id))
+    {
+        // If there are messages to send in the inactive list
+        if (inactive_list.count(client.id) > 0)
+        {
+            // While there are still messages left
+            while (!inactive_list.at(client.id).empty())
+            {
+                // Send the received messages while client was inactive
+                message msg = inactive_list.at(client.id).front();
+                inactive_list.at(client.id).pop();
+                send_message(msg, client.socket);
+            }
+        }
+    }
+}
+
 bool handle_reconnecting_client(tcp_client clients[], char client_id[], int &number_of_clients,
                                 struct sockaddr_in tcp_addr, unordered_map<string, queue<message>> &inactive_list)
 {
@@ -113,22 +131,10 @@ bool handle_reconnecting_client(tcp_client clients[], char client_id[], int &num
         if (!strcmp(clients[i].id, client_id))
         {
             // Set client to active
-            clients[i].active = true;
             printf("New client %s connected from %s : %d\n",
                    client_id, inet_ntoa(tcp_addr.sin_addr), ntohs(tcp_addr.sin_port));
 
-            // If client has inactive messages, send them
-            if (hasKeyV1(inactive_list, clients[i].id))
-            {
-                // While there are still messages left
-                while (!inactive_list.at(clients[i].id).empty())
-                {
-                    // Send the received messages while client was inactive
-                    message msg = inactive_list.at(clients[i].id).front();
-                    inactive_list.at(clients[i].id).pop();
-                    send_message(msg, clients[i].socket);
-                }
-            }
+            activate_client(inactive_list, clients[i]);
 
             return true;
             break;
@@ -392,18 +398,17 @@ void handle_commands(char buffer[MAX_SIZE], int number_of_clients, tcp_client cl
 
         fprintf(stderr, "Received subscribe from client to %s with sf %d.\n", topic_targeted, sf);
 
-        for (int i = 0; i < number_of_clients; i++)
+        for (tcp_client *ptr = clients, *end = clients + number_of_clients; ptr != end; ++ptr)
         {
-            if (clients[i].socket == sockfd)
+            bool present = hasKeyV2(ptr->topics, topic_targeted);
+            if (ptr->socket == sockfd && present)
             {
-                if (hasKeyV2(clients[i].topics, topic_targeted))
-                {
-                    clients[i].topics.at(topic_targeted) = sf;
-                }
-                else
-                {
-                    clients[i].topics.insert(pair<string, int>(topic_targeted, sf));
-                }
+
+                ptr->topics[topic_targeted] = sf;
+            }
+            else if (ptr->socket == sockfd)
+            {
+                ptr->topics.insert(std::make_pair(topic_targeted, sf));
             }
         }
     }
@@ -423,6 +428,19 @@ void handle_commands(char buffer[MAX_SIZE], int number_of_clients, tcp_client cl
 
     // TO DO : EXIT
 }
+
+void deactivate_client(tcp_client clients[], int number_of_clients, int sockfd)
+{
+    auto client = std::find_if(&clients[0], &clients[number_of_clients], [&](const auto &c)
+                               { return c.socket == sockfd; });
+
+    if (client != &clients[number_of_clients])
+    {
+        client->active = false;
+        printf("Client %s disconnected.\n", client->id);
+    }
+}
+
 int receive_from_tcp(char buffer[MAX_SIZE], int sockfd, int number_of_clients, tcp_client clients[],
                      int epollfd, struct epoll_event *events, int index)
 {
@@ -431,17 +449,10 @@ int receive_from_tcp(char buffer[MAX_SIZE], int sockfd, int number_of_clients, t
     int rc = recv(sockfd, buffer, MAX_SIZE, 0);
     DIE(rc < 0, "Cannot receive message from TCP client.");
 
-    if (rc == 0)
+    if (!rc)
     {
-        for (int i = 0; i < number_of_clients; i++)
-        {
-            if (clients[i].socket == sockfd)
-            {
-                printf("Client %s disconnected.\n", clients[i].id);
-                clients[i].active = false;
-                break;
-            }
-        }
+        // Set client status to inactive
+        deactivate_client(clients, number_of_clients, sockfd);
 
         // Remove socket from epoll
         int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, sockfd, &events[index]);
