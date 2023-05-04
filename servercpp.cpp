@@ -195,47 +195,52 @@ void separate_udp_message(char buffer[MAX_SIZE], message *msg, int size)
     msg->topic = strtok(buffer, " ");
 
     int type = (int)buffer[MAX_TOPIC_SIZE];
+    int val, sign, exp;
+    uint8_t pow, pow1;
+    float fval;
+    char aux[MAX_CONTENT_SIZE];
 
     switch (type)
     {
     case 0:
         msg->data_type = "INT";
-        int sign = (int)buffer[MAX_TOPIC_SIZE + 1];
-        int val = ntohl(*(uint32_t *)(buffer + MAX_TOPIC_SIZE + 2));
+        sign = (int)buffer[MAX_TOPIC_SIZE + 1];
+        val = ntohl(*(uint32_t *)(buffer + MAX_TOPIC_SIZE + 2));
         val = sign == 1 ? -val : val;
-        char aux[MAX_TOPIC_SIZE];
-        snprintf(aux, MAX_TOPIC_SIZE, "%d", val);
+        snprintf(aux, MAX_CONTENT_SIZE, "%d", val);
         msg->payload = aux;
         break;
+
     case 1:
         msg->data_type = "SHORT_REAL";
-        float val = ntohs(*(uint16_t *)(buffer + MAX_TOPIC_SIZE + 1)) / 100.0;
-        char aux[MAX_CONTENT_SIZE];
-        snprintf(aux, MAX_CONTENT_SIZE, "%.2f", val);
+        fval = ntohs(*(uint16_t *)(buffer + MAX_TOPIC_SIZE + 1)) / 100.0;
+        snprintf(aux, MAX_CONTENT_SIZE, "%.2f", fval);
         msg->payload = aux;
         break;
+
     case 2:
         msg->data_type = "FLOAT";
         sign = (int)buffer[MAX_TOPIC_SIZE + 1];
         val = ntohl(*(uint32_t *)(buffer + MAX_TOPIC_SIZE + 2));
-        uint8_t pow = (*(uint8_t *)(buffer + MAX_TOPIC_SIZE + 6));
-        uint8_t pow1 = pow;
-        int exp = 1;
+        pow = (*(uint8_t *)(buffer + MAX_TOPIC_SIZE + 6));
+        pow1 = pow;
+        exp = 1;
         while (pow1 != 0)
         {
             exp *= 10;
             pow1--;
         }
-        double float_val = val / (exp * 1.0);
-        sign == 1 ? -float_val : float_val;
-        char aux[MAX_CONTENT_SIZE];
-        snprintf(aux, MAX_CONTENT_SIZE, "%1.10g", float_val);
+        fval = val / (exp * 1.0);
+        sign == 1 ? -fval : fval;
+        snprintf(aux, MAX_CONTENT_SIZE, "%1.10g", fval);
         msg->payload = aux;
         break;
+
     case 3:
         msg->data_type = "STRING";
         msg->payload = buffer + MAX_TOPIC_SIZE + 1;
         break;
+
     default:
         fprintf(stderr, "Invalid message type.\n");
         break;
@@ -244,7 +249,6 @@ void separate_udp_message(char buffer[MAX_SIZE], message *msg, int size)
 void create_new_message(message &msg, struct sockaddr_in udp_ip_addr)
 {
     // Create message
-    message msg;
     memset(&msg, 0, sizeof(msg));
     msg.ip_udp = inet_ntoa(udp_ip_addr.sin_addr);
     char aux[6];
@@ -294,7 +298,7 @@ int handle_udp(int udp_socket, int epollfd, char buffer[MAX_SIZE], tcp_client cl
                int &number_of_clients, struct epoll_event *events, int index,
                unordered_map<string, queue<message>> &inactive_list)
 {
-    memset(buffer, 0, sizeof(buffer));
+    memset(buffer, 0, MAX_SIZE);
     struct sockaddr_in udp_ip_addr;
     memset(&udp_ip_addr, 0, sizeof(udp_ip_addr));
     socklen_t udp_ip_addr_len = sizeof(udp_ip_addr);
@@ -322,7 +326,7 @@ int handle_udp(int udp_socket, int epollfd, char buffer[MAX_SIZE], tcp_client cl
 int handle_stdin(char buffer[MAX_SIZE], int number_of_clients, tcp_client clients[], int epollfd,
                  struct epoll_event *events, int index)
 {
-    memset(buffer, 0, sizeof(buffer));
+    memset(buffer, 0, MAX_SIZE);
     int rc = read(STDIN_FILENO, buffer, MAX_SIZE);
     DIE(rc < 0, "Cannot read from stdin.");
     buffer[rc - 1] = '\0';
@@ -353,6 +357,104 @@ int handle_stdin(char buffer[MAX_SIZE], int number_of_clients, tcp_client client
     return 0;
 }
 
+void handle_commands(char buffer[MAX_SIZE], int number_of_clients, tcp_client clients[], int sockfd)
+{
+    char topic_targeted[MAX_TOPIC_SIZE];
+    char sf[MAX_SF_SIZE];
+    char command[MAX_COMMAND_SIZE];
+    memset(topic_targeted, 0, MAX_TOPIC_SIZE);
+    memset(sf, 0, MAX_SF_SIZE);
+    memset(command, 0, MAX_COMMAND_SIZE);
+
+    if (!strncmp(buffer, "subscribe", SUBSCRIBE_COMMAND_LEN))
+    {
+        // strncpy(topic_targeted, buffer + SUBSCRIBE_COMMAND_LEN + 1, strlen(buffer) - SUBSCRIBE_COMMAND_LEN - 4);
+        // topic_targeted[strlen(buffer) - SUBSCRIBE_COMMAND_LEN - 4] = '\0';
+        // strncpy(sf, buffer + SUBSCRIBE_COMMAND_LEN + 1 + strlen(topic_targeted) + 1,
+        //         1);
+        // sf[MAX_SF_SIZE] = '\0';
+        buffer[strlen(buffer) - 1] = '\0';
+        // Separate words in buffer using strtok
+        char *token = strtok(buffer, " ");
+        memcpy(command, token, strlen(token));
+        command[strlen(command)] = '\0';
+
+        token = strtok(NULL, " ");
+        memcpy(topic_targeted, token, strlen(token));
+        topic_targeted[strlen(topic_targeted)] = '\0';
+
+        token = strtok(NULL, "\n");
+        memcpy(sf, token, 1);
+
+        fprintf(stderr, "Received subscribe to %s with sf %s.\n", topic_targeted, sf);
+        fprintf(stderr, "%s\n", sf);
+
+        for (int i = 0; i < number_of_clients; i++)
+        {
+            if (clients[i].socket == sockfd)
+            {
+                if (hasKeyV2(clients[i].topics, topic_targeted))
+                {
+                    clients[i].topics.at(topic_targeted) = atoi(sf);
+                }
+                else
+                {
+                    clients[i].topics.insert(pair<string, int>(topic_targeted, atoi(sf)));
+                }
+            }
+        }
+    }
+    else if (!strncmp(buffer, "unsubscribe", UNSUBSCRIBE_COMMAND_LEN))
+    {
+        strncpy(topic_targeted, buffer + UNSUBSCRIBE_COMMAND_LEN + 1, strlen(buffer) - UNSUBSCRIBE_COMMAND_LEN - 2);
+        fprintf(stderr, "Received unsubscribe to topic %s.\n", topic_targeted);
+
+        for (int i = 0; i < number_of_clients; i++)
+        {
+            if (clients[i].socket == sockfd)
+            {
+                clients[i].topics.erase(topic_targeted);
+            }
+        }
+    }
+
+    // TO DO : EXIT
+}
+int receive_from_tcp(char buffer[MAX_SIZE], int sockfd, int number_of_clients, tcp_client clients[],
+                     int epollfd, struct epoll_event *events, int index)
+{
+    memset(buffer, 0, MAX_SIZE);
+
+    int rc = recv(sockfd, buffer, MAX_SIZE, 0);
+    DIE(rc < 0, "Cannot receive message from TCP client.");
+
+    if (rc == 0)
+    {
+        for (int i = 0; i < number_of_clients; i++)
+        {
+            if (clients[i].socket == sockfd)
+            {
+                fprintf(stderr, "Client disconnected.\n");
+                clients[i].active = false;
+                break;
+            }
+        }
+        // Close connection
+        close(sockfd);
+
+        // Remove socket from epoll
+        int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, sockfd, &events[index]);
+        DIE(rc < 0, "Unable to remove socket from epoll.");
+
+        return -1;
+    }
+
+    // Handle commands from client
+    handle_commands(buffer, number_of_clients, clients, sockfd);
+
+    return 1;
+}
+
 int main(int argc, char *argv[])
 {
     // Declare sockets
@@ -373,6 +475,7 @@ int main(int argc, char *argv[])
 
     // Create buffer
     char buffer[MAX_SIZE];
+
     while (1)
     {
         struct epoll_event events[MAX_CONNS];
@@ -415,6 +518,11 @@ int main(int argc, char *argv[])
             else if (events[i].events & EPOLLIN)
             {
                 // Received message from TCP clients
+                if (receive_from_tcp(buffer, events[i].data.fd, number_of_clients, clients,
+                                     epollfd, events, i) == -1)
+                {
+                    continue;
+                }
             }
         }
     }
