@@ -135,7 +135,7 @@ int main(int argc, char *argv[])
                     // Send subscribe buffer to server
                     send(tcp_socket, buf, strlen(buf), 0);
 
-                    printf("Received %d packets.\n", recieved_packets);
+                    fprintf(stderr, "Received %d packets.\n", recieved_packets);
 
                     // Close TCP socket
                     close(tcp_socket);
@@ -144,20 +144,34 @@ int main(int argc, char *argv[])
                 }
                 else if (!strncmp(buf, "subscribe", SUBSCRIBE_COMMAND_LEN))
                 {
-                    fprintf(stderr, "Subscriber sends %s", buf);
+                    // <topic>S<SF>
+                    char *msg = (char *)malloc(MAX_SIZE);
+                    memset(msg, 0, MAX_SIZE);
+                    memcpy(msg, buf, strlen(buf));
+                    memmove(msg, msg + SUBSCRIBE_COMMAND_LEN + 1, strlen(msg));
+                    msg[strlen(msg) - 3] = 'S';
+
+                    fprintf(stderr, "Subscriber sends %s", msg);
                     printf("Subscribed to topic.\n");
 
                     // Send subscribe buffer to server
-                    send(tcp_socket, buf, strlen(buf), 0);
+                    send(tcp_socket, msg, strlen(msg), 0);
                 }
 
                 else if (!strncmp(buf, "unsubscribe", UNSUBSCRIBE_COMMAND_LEN))
                 {
-                    fprintf(stderr, "Subscriber sends %s", buf);
+                    // <topic>U<SF>
+                    char *msg = (char *)malloc(MAX_SIZE);
+                    memset(msg, 0, MAX_SIZE);
+                    memcpy(msg, buf, strlen(buf));
+                    memmove(msg, msg + UNSUBSCRIBE_COMMAND_LEN + 1, strlen(msg));
+                    msg[strlen(msg) - 1] = 'U';
+
+                    fprintf(stderr, "Subscriber sends %s.\n", msg);
                     printf("Unsubscribed from topic.\n");
 
                     // Send unsubscribe buffer to server
-                    send(tcp_socket, buf, strlen(buf), 0);
+                    send(tcp_socket, msg, strlen(msg), 0);
                 }
                 else
                 {
