@@ -81,8 +81,10 @@ int recv_all(int sockfd, char *buffer, size_t len)
     int rc = recv(sockfd, &size, sizeof(int), 0);
     DIE(rc < 0, "Unable to receive size of message.");
 
+    // Recv exactly size bytes from server
     size_t bytes_received = 0;
     size_t bytes_remaining = size;
+
     char *buff = buffer;
     while (bytes_remaining)
     {
@@ -130,11 +132,7 @@ int main(int argc, char *argv[])
                 // Check to see if we need to exit the server
                 if (!strncmp(buf, "exit", EXIT_SIZE))
                 {
-                    fprintf(stderr, "Subscriber sends %s", buf);
-
-                    // Send subscribe buffer to server
-                    send(tcp_socket, buf, strlen(buf), 0);
-
+                    // Prepare number of packets received
                     fprintf(stderr, "Received %d packets.\n", recieved_packets);
 
                     // Close TCP socket
@@ -190,6 +188,7 @@ int main(int argc, char *argv[])
 
                 if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
                 {
+                    close(tcp_socket);
                     return 0;
                 }
 
