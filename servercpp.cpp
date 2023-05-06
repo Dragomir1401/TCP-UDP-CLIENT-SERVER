@@ -5,8 +5,6 @@
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
-#include <algorithm>
-#include <iterator>
 #include "protocols.h"
 #include <sys/stat.h>
 #include <sys/epoll.h>
@@ -61,21 +59,18 @@ void disconnect_client(int sockfd)
     free(buffer);
 }
 
-bool hasKeyV1(const unordered_map<string, queue<message>> &map, const string &key)
+template <typename ValueType>
+bool hasKey(const unordered_map<string, ValueType> &map1, const string &key)
 {
-    for (auto it = map.cbegin(); it != map.cend(); ++it)
+    for (auto it = map1.cbegin(); it != map1.cend(); ++it)
     {
         if (it->first == key)
         {
             return true;
         }
     }
-    return false;
-}
 
-bool hasKeyV2(unordered_map<string, int> map, string key)
-{
-    return map.count(key) ? true : false;
+    return false;
 }
 
 void send_message(message msg, int sockfd)
@@ -105,7 +100,7 @@ void activate_client(unordered_map<string, queue<message>> &inactive_list, tcp_c
     client.active = true;
 
     // If client has inactive messages, send them
-    if (hasKeyV1(inactive_list, client.id))
+    if (hasKey(inactive_list, client.id))
     {
         // If there are messages to send in the inactive list
         if (inactive_list.count(client.id) > 0)
@@ -144,6 +139,17 @@ bool handle_reconnecting_client(tcp_client clients[], char client_id[], int &num
     return false;
 }
 
+void remove_and_disconnect_client(int epollfd, int new_socket, struct epoll_event *events, int index)
+{
+    disconnect_client(new_socket);
+
+    // Remove socket from epoll
+    int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, new_socket, &events[index]);
+    DIE(rc < 0, "Unable to remove socket from epoll.");
+
+    close(new_socket);
+}
+
 int handle_tcp(int tcp_socket, int epollfd, char buffer[MAX_SIZE], tcp_client clients[],
                int &number_of_clients, struct epoll_event *events, int index,
                unordered_map<string, queue<message>> &inactive_list)
@@ -173,13 +179,9 @@ int handle_tcp(int tcp_socket, int epollfd, char buffer[MAX_SIZE], tcp_client cl
     {
         // Client is already connected
         printf("Client %s already connected.\n", buffer);
-        disconnect_client(new_socket);
 
-        // Remove socket from epoll
-        int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, new_socket, &events[index]);
-        DIE(rc < 0, "Unable to remove socket from epoll.");
-
-        close(new_socket);
+        // Remove socket from epoll and disconnect client
+        remove_and_disconnect_client(epollfd, new_socket, events, index);
 
         return -1;
     }
@@ -283,7 +285,7 @@ void send_to_clients(tcp_client clients[], int &number_of_clients, message msg,
     for (int i = 0; i < number_of_clients; i++)
     {
         // If client is active and subscribed to topic
-        if (hasKeyV2(clients[i].topics, msg.topic))
+        if (hasKey(clients[i].topics, msg.topic))
         {
             fprintf(stderr, "Sending message to client %s.\n", clients[i].id);
             if (clients[i].active)
@@ -293,17 +295,19 @@ void send_to_clients(tcp_client clients[], int &number_of_clients, message msg,
         }
 
         // If client is not active and subscribed to topic
-        if (!clients[i].active && hasKeyV2(clients[i].topics, msg.topic))
+        if (!clients[i].active && hasKey(clients[i].topics, msg.topic))
         {
             // Save message for later for clients subscribed with sf 1
-            if (hasKeyV1(inactive_list, clients[i].id))
+            if (hasKey(inactive_list, clients[i].id))
             {
                 if (clients[i].topics.at(msg.topic) == 1)
                 {
                     inactive_list[clients[i].id].push(msg);
                 }
+                return;
             }
 
+            // If client is subscribed with sf 1 create a new queue of messages
             if (clients[i].topics.at(msg.topic) == 1)
             {
                 queue<message> q;
@@ -314,26 +318,51 @@ void send_to_clients(tcp_client clients[], int &number_of_clients, message msg,
     }
 }
 
+struct sockaddr_in recvfrom_wrapper(int udp_socket, char buffer[MAX_SIZE], int &size_recv)
+{
+    struct sockaddr_in udp_ip_addr;
+    socklen_t udp_ip_addr_len = sizeof(udp_ip_addr);
+
+    while (true)
+    {
+        size_recv = recvfrom(udp_socket, (char *)buffer, MAX_SIZE,
+                             MSG_WAITALL, (struct sockaddr *)&udp_ip_addr,
+                             &udp_ip_addr_len);
+
+        if (size_recv >= 0)
+        {
+            break;
+        }
+        else if (errno == EINTR)
+        {
+            // The recvfrom call was interrupted by a signal, try again.
+            continue;
+        }
+        else
+        {
+            DIE(true, "Cannot receive message from UDP client.");
+        }
+    }
+
+    return udp_ip_addr;
+}
+
 int handle_udp(int udp_socket, int epollfd, char buffer[MAX_SIZE], tcp_client clients[],
                int &number_of_clients, struct epoll_event *events, int index,
                unordered_map<string, queue<message>> &inactive_list)
 {
     memset(buffer, 0, MAX_SIZE);
-    struct sockaddr_in udp_ip_addr;
-    memset(&udp_ip_addr, 0, sizeof(udp_ip_addr));
-    socklen_t udp_ip_addr_len = sizeof(udp_ip_addr);
+    int size_recv = 0;
 
-    int rc = recvfrom(udp_socket, (char *)buffer, MAX_SIZE,
-                      MSG_WAITALL, (struct sockaddr *)&udp_ip_addr,
-                      &udp_ip_addr_len);
-    DIE(rc < 0, "Cannot receive message from UDP client.");
+    // Receive message from UDP client
+    struct sockaddr_in udp_ip_addr = recvfrom_wrapper(udp_socket, buffer, size_recv);
 
     // Create message
     message msg;
     create_new_message(msg, udp_ip_addr);
 
     // Parse input
-    separate_udp_message(buffer, &msg, rc);
+    separate_udp_message(buffer, &msg, size_recv);
 
     // Send to clients
     send_to_clients(clients, number_of_clients, msg, inactive_list);
@@ -357,13 +386,8 @@ int handle_stdin(char buffer[MAX_SIZE], int number_of_clients, tcp_client client
         {
             if (clients[i].active)
             {
-                disconnect_client(clients[i].socket);
-
-                // Remove socket from epoll
-                int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, clients[i].socket, &events[index]);
-                DIE(rc < 0, "Unable to remove socket from epoll.");
-
-                close(clients[i].socket);
+                // Remove socket from epoll and disconnect client
+                remove_and_disconnect_client(epollfd, clients[i].socket, events, index);
             }
         }
 
@@ -398,18 +422,23 @@ void handle_commands(char buffer[MAX_SIZE], int number_of_clients, tcp_client cl
 
         fprintf(stderr, "Received subscribe from client to %s with sf %d.\n", topic_targeted, sf);
 
-        for (tcp_client *ptr = clients, *end = clients + number_of_clients; ptr != end; ++ptr)
+        int i = 0;
+        while (i < number_of_clients && clients[i].socket != sockfd)
         {
-            bool present = hasKeyV2(ptr->topics, topic_targeted);
-            if (ptr->socket == sockfd && present)
-            {
+            i++;
+        }
 
-                ptr->topics[topic_targeted] = sf;
-            }
-            else if (ptr->socket == sockfd)
+        if (i < number_of_clients)
+        {
+            // If topic-sf is already in client's topics, update sf
+            if (hasKey(clients[i].topics, topic_targeted))
             {
-                ptr->topics.insert(std::make_pair(topic_targeted, sf));
+                clients[i].topics.at(topic_targeted) = sf;
+                return;
             }
+
+            // Else add topic-sf pair to client
+            clients[i].topics.insert(pair<string, int>(topic_targeted, sf));
         }
     }
     else if (buffer[strlen(buffer) - 1] == 'U')
@@ -425,19 +454,20 @@ void handle_commands(char buffer[MAX_SIZE], int number_of_clients, tcp_client cl
             }
         }
     }
-
-    // TO DO : EXIT
 }
 
 void deactivate_client(tcp_client clients[], int number_of_clients, int sockfd)
 {
-    auto client = std::find_if(&clients[0], &clients[number_of_clients], [&](const auto &c)
-                               { return c.socket == sockfd; });
-
-    if (client != &clients[number_of_clients])
+    int i = 0;
+    while (i < number_of_clients && clients[i].socket != sockfd)
     {
-        client->active = false;
-        printf("Client %s disconnected.\n", client->id);
+        ++i;
+    }
+
+    if (i < number_of_clients)
+    {
+        clients[i].active = false;
+        printf("Client %s disconnected.\n", clients[i].id);
     }
 }
 
