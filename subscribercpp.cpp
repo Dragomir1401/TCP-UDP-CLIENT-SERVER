@@ -22,7 +22,7 @@
 #include <queue>
 using namespace std;
 
-void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *eventfd)
+void prepare_conn_sub(int argc, char *argv[], int *tcp_socket, int *epollfd)
 {
     // Check correct usage
     DIE(argc < 4, "You need this usage syntax: %s client_id server_address server_port.", argv[0]);
@@ -55,6 +55,7 @@ void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *ev
     strncpy(buf, argv[1], strlen(argv[1]) + 1);
     rc = send(*tcp_socket, buf, strlen(buf), 0);
     DIE(rc < 0, "Unable to send TCP client id to server.");
+    free(buf);
 
     // Create epoll
     *epollfd = epoll_create1(0);
@@ -75,7 +76,7 @@ void prepare_conn(int argc, char *argv[], int *tcp_socket, int *epollfd, int *ev
     DIE(rc < 0, "Unable to add stdin socket to epoll instance.");
 }
 
-int recv_all(int sockfd, char *buffer, size_t len)
+int recv_wrapper(int sockfd, char *buffer, size_t len)
 {
     int size;
     int rc = recv(sockfd, &size, sizeof(int), 0);
@@ -91,12 +92,12 @@ int recv_all(int sockfd, char *buffer, size_t len)
         int rc = recv(sockfd, buff + bytes_received, bytes_remaining, 0);
         // rc == 0 -> conn closed
         // rc < 0 -> error
-        // rc = no of bytes recieved
+        // rc = no of bytes received
 
         if (rc < 0)
         {
             printf("Unable to recv.\n");
-            break;
+            return -1;
         }
 
         bytes_received += rc;
@@ -108,15 +109,19 @@ int recv_all(int sockfd, char *buffer, size_t len)
 
 int main(int argc, char *argv[])
 {
-    int tcp_socket, epollfd, eventfd;
-    prepare_conn(argc, argv, &tcp_socket, &epollfd, &eventfd);
-
+    int tcp_socket, epollfd;
+    prepare_conn_sub(argc, argv, &tcp_socket, &epollfd);
+    char *buf = (char *)malloc(MAX_SIZE);
+    char *msg = (char *)malloc(MAX_SIZE);
+    int rc;
     int read_size = sizeof(int);
     int recieved_packets = 0;
-    while (1)
+    int broke = 0;
+
+    while (!broke)
     {
         struct epoll_event events[MAX_CONNS];
-        int num_events = epoll_wait(epollfd, events, MAX_CONNS, -1);
+        int num_events = epoll_wait(epollfd, events, MAX_CONNS, TIMEOUT);
         DIE(num_events < 0, "Epoll wait error.");
 
         for (int i = 0; i < num_events; i++)
@@ -124,7 +129,6 @@ int main(int argc, char *argv[])
             if (events[i].data.fd == STDIN_FILENO)
             {
                 // Stdin reply
-                char *buf = (char *)malloc(MAX_SIZE);
                 memset(buf, 0, MAX_SIZE);
                 int rc = read(STDIN_FILENO, buf, MAX_SIZE);
                 DIE(rc == -1, "Unable to read from stdin.");
@@ -135,15 +139,13 @@ int main(int argc, char *argv[])
                     // Prepare number of packets received
                     fprintf(stderr, "Received %d packets.\n", recieved_packets);
 
-                    // Close TCP socket
-                    close(tcp_socket);
                     // Exit loop
-                    exit(1);
+                    broke = 1;
+                    break;
                 }
                 else if (!strncmp(buf, "subscribe", SUBSCRIBE_COMMAND_LEN))
                 {
                     // <topic>S<SF>
-                    char *msg = (char *)malloc(MAX_SIZE);
                     memset(msg, 0, MAX_SIZE);
                     memcpy(msg, buf, strlen(buf));
                     memmove(msg, msg + SUBSCRIBE_COMMAND_LEN + 1, strlen(msg));
@@ -153,13 +155,13 @@ int main(int argc, char *argv[])
                     printf("Subscribed to topic.\n");
 
                     // Send subscribe buffer to server
-                    send(tcp_socket, msg, strlen(msg), 0);
+                    rc = send(tcp_socket, msg, strlen(msg), 0);
+                    DIE(rc < 0, "Unable to send subscribe message to server.");
                 }
 
                 else if (!strncmp(buf, "unsubscribe", UNSUBSCRIBE_COMMAND_LEN))
                 {
                     // <topic>U<SF>
-                    char *msg = (char *)malloc(MAX_SIZE);
                     memset(msg, 0, MAX_SIZE);
                     memcpy(msg, buf, strlen(buf));
                     memmove(msg, msg + UNSUBSCRIBE_COMMAND_LEN + 1, strlen(msg));
@@ -169,27 +171,25 @@ int main(int argc, char *argv[])
                     printf("Unsubscribed from topic.\n");
 
                     // Send unsubscribe buffer to server
-                    send(tcp_socket, msg, strlen(msg), 0);
+                    rc = send(tcp_socket, msg, strlen(msg), 0);
+                    DIE(rc < 0, "Unable to send subscribe message to server.");
                 }
                 else
                 {
                     printf("Invalid command. Please consider reading documentation.\n");
                 }
-
-                free(buf);
             }
             else if (events[i].data.fd == tcp_socket)
             {
-                char *buf = (char *)malloc(BUFSIZ);
                 memset(buf, 0, BUFSIZ);
 
-                int rc = recv_all(tcp_socket, buf, read_size);
+                int rc = recv_wrapper(tcp_socket, buf, read_size);
                 DIE(rc < 0, "Unable to read from TCP socket.");
 
                 if (!strncmp(buf, "close", CLOSE_MESSAGE_LEN))
                 {
-                    close(tcp_socket);
-                    return 0;
+                    broke = 1;
+                    break;
                 }
 
                 if (!rc)
@@ -198,13 +198,13 @@ int main(int argc, char *argv[])
                     read_size = sizeof(int);
                     recieved_packets++;
                 }
-
-                free(buf);
             }
         }
     }
 
     close(tcp_socket);
+    free(buf);
+    free(msg);
 
     return 0;
 }
