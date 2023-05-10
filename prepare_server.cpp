@@ -5,7 +5,7 @@
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
-#include "utils.h"
+#include "protocols.h"
 #include <sys/stat.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
@@ -49,13 +49,10 @@ void add_epoll_events(int epollfd, int tcp_socket, int udp_socket)
 }
 
 void prepare_conn(int *udp_socket, int *tcp_socket,
-                  struct sockaddr_in server_addr, int argc, char *argv[], int *epollfd, int *eventfd)
+                  struct sockaddr_in server_addr, int argc, char *argv[], int *epollfd)
 {
     // Turning off buffering at stdout
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
-
-    // Checking correct usage
-    DIE(argc < 2, "You need to use a port: %s server_port.", argv[0]);
 
     // Check to see if the server port is valid
     DIE(!atoi(argv[1]), "Invalid port number.");
