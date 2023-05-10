@@ -75,7 +75,7 @@ bool hasKey(const unordered_map<string, ValueType> &map1, const string &key)
 
 void send_message(message msg, int sockfd)
 {
-    string acc = msg.topic + " - " + msg.data_type + " - " + msg.payload;
+    string acc = msg.ip_udp + ":" + msg.port_udp + " - " + msg.topic + " - " + msg.data_type + " - " + msg.payload;
 
     // Send size + actual payload
     char *buffer = (char *)malloc(MAX_SIZE);
@@ -389,6 +389,9 @@ int handle_stdin(char buffer[MAX_SIZE], int number_of_clients, tcp_client client
                 // Remove socket from epoll and disconnect client
                 remove_and_disconnect_client(epollfd, clients[i].socket, events, index);
             }
+            // Anyway remove socket from epoll
+            int rc = epoll_ctl(epollfd, EPOLL_CTL_DEL, clients[i].socket, &events[index]);
+            DIE(rc < 0, "Unable to remove socket from epoll.");
         }
 
         return 0;
@@ -503,13 +506,13 @@ int receive_from_tcp(char buffer[MAX_SIZE], int sockfd, int number_of_clients, t
 int main(int argc, char *argv[])
 {
     // Declare sockets
-    int tcp_socket, udp_socket, epollfd, eventfd;
+    int tcp_socket, udp_socket, epollfd;
 
     // Set up server_addr
     struct sockaddr_in server_addr = set_up_server_addr(argv[1]);
 
     // Prepare connections
-    prepare_conn(&udp_socket, &tcp_socket, server_addr, argc, argv, &epollfd, &eventfd);
+    prepare_conn(&udp_socket, &tcp_socket, server_addr, argc, argv, &epollfd);
 
     // Create inactive list of clietns for sf
     unordered_map<string, queue<message>> inactive_list;
@@ -521,7 +524,9 @@ int main(int argc, char *argv[])
     // Create buffer
     char buffer[MAX_SIZE];
 
-    while (1)
+    int broke = 0;
+
+    while (!broke)
     {
         struct epoll_event events[MAX_CONNS];
         int num_events = epoll_wait(epollfd, events, MAX_CONNS, TIMEOUT);
@@ -553,11 +558,8 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
-                    close(tcp_socket);
-                    close(udp_socket);
-                    close(epollfd);
-                    close(eventfd);
-                    return 0;
+                    broke = 1;
+                    break;
                 }
             }
             else if (events[i].events & EPOLLIN)
@@ -571,5 +573,10 @@ int main(int argc, char *argv[])
             }
         }
     }
+
+    shutdown(tcp_socket, SHUT_RDWR);
+    close(tcp_socket);
+    close(udp_socket);
+    close(epollfd);
     return 0;
 }
